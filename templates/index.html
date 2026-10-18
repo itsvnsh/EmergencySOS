@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EmergencySOS Console</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="pulse" aria-hidden="true"></span>
+    <div>
+      <h1>EmergencySOS</h1>
+      <p>Dispatch console &middot; Team Rescuers &middot; OSDBMS-V-2026-T203</p>
+    </div>
+  </div>
+  <div class="top-stats" id="topStats"></div>
+</header>
+
+<nav class="tabs" role="tablist">
+  <button class="tab active" data-tab="dispatch">SOS &amp; Dispatch</button>
+  <button class="tab" data-tab="queue">Queue</button>
+  <button class="tab" data-tab="hospitals">Hospitals &amp; Admin</button>
+  <button class="tab" data-tab="schedlab">Scheduler Lab</button>
+</nav>
+
+<main>
+  <!-- ============ SOS & DISPATCH ============ -->
+  <section class="panel active" id="tab-dispatch">
+    <div class="grid two">
+      <div class="card">
+        <h2>New SOS request</h2>
+        <form id="sosForm" autocomplete="off">
+          <label>Patient name <input name="patient_name" required maxlength="80" placeholder="e.g. Rahul Sharma"></label>
+          <label>Phone <input name="phone" maxlength="20" placeholder="optional"></label>
+          <div class="row">
+            <label>Emergency type <select name="emergency_type" id="typeSelect"></select></label>
+            <label>Severity <span class="hint" id="sevLabel">3 &middot; moderate</span>
+              <input type="range" name="severity" id="sevRange" min="1" max="5" value="3">
+            </label>
+          </div>
+          <label>Location
+            <select id="locSelect"></select>
+          </label>
+          <div class="row">
+            <label>Latitude <input name="latitude" id="lat" required></label>
+            <label>Longitude <input name="longitude" id="lon" required></label>
+            <button type="button" class="ghost small" id="geoBtn" title="Use this device's location">My location</button>
+          </div>
+          <label>Description <input name="description" maxlength="255" placeholder="what happened (optional)"></label>
+          <button type="submit" class="danger big">Send SOS</button>
+        </form>
+        <div id="sosResult"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>Dispatcher</h2>
+          <div class="inline">
+            <select id="dispatchPolicy"></select>
+            <button class="primary" id="dispatchBtn">Dispatch next</button>
+          </div>
+        </div>
+        <p class="muted">The scheduler picks the next request under the selected policy, the ranking module
+          scores hospitals, and the transaction manager reserves a unit (rolling back to the next hospital if it is gone).</p>
+        <div id="dispatchResult" class="empty">No dispatch yet.</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>Active allocations</h2>
+        <button class="ghost small" id="refreshAlloc">Refresh</button>
+      </div>
+      <div id="allocTable"></div>
+    </div>
+  </section>
+
+  <!-- ============ QUEUE ============ -->
+  <section class="panel" id="tab-queue">
+    <div class="card">
+      <div class="card-head">
+        <h2>Pending queue</h2>
+        <div class="inline">
+          <select id="queuePolicy"></select>
+          <button class="ghost small" id="seedBtn">Add demo requests</button>
+        </div>
+      </div>
+      <p class="muted" id="queueNote"></p>
+      <div id="queueTable"></div>
+    </div>
+    <div class="card">
+      <h2>Recent requests</h2>
+      <div id="recentTable"></div>
+    </div>
+  </section>
+
+  <!-- ============ HOSPITALS ============ -->
+  <section class="panel" id="tab-hospitals">
+    <div class="card-head">
+      <h2 class="section-title">Hospital capacity <span class="muted small">(simulated data, refreshes every 5 s)</span></h2>
+      <button class="ghost small" id="resetBtn">Reset simulated data</button>
+    </div>
+    <div id="hospitalGrid" class="hospital-grid"></div>
+  </section>
+
+  <!-- ============ SCHEDULER LAB ============ -->
+  <section class="panel" id="tab-schedlab">
+    <div class="card">
+      <div class="card-head">
+        <h2>Scheduler comparison</h2>
+        <div class="inline">
+          <label class="inline-label">Aging every
+            <input type="number" id="agingInput" min="0" max="120" value="10" class="narrow"> min</label>
+          <button class="primary" id="runSchedBtn">Run on sample workload</button>
+        </div>
+      </div>
+      <p class="muted">12 requests arrive over a shift; one dispatcher handles one case at a time (non-preemptive).
+        Burst time = estimated handling time from the classifier. "Critical" = priority 1&ndash;2.</p>
+      <div id="workloadTable"></div>
+    </div>
+    <div id="schedResults"></div>
+  </section>
+</main>
+
+<div id="toast" class="toast" role="status"></div>
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
