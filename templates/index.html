@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EmergencySOS Console</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="cross" aria-hidden="true"></span>
+    <div>
+      <h1>EmergencySOS</h1>
+      <p>Dispatch console &middot; Team Rescuers &middot; OSDBMS-V-2026-T203</p>
+    </div>
+  </div>
+  <div class="top-stats" id="topStats"></div>
+</header>
+
+<nav class="tabs" role="tablist">
+  <button class="tab active" data-tab="dispatch">SOS &amp; Dispatch</button>
+  <button class="tab" data-tab="queue">Queue</button>
+  <button class="tab" data-tab="hospitals">Hospitals &amp; Admin</button>
+  <button class="tab" data-tab="schedlab">Scheduler Lab</button>
+</nav>
+
+<main>
+  <!-- ============ SOS & DISPATCH ============ -->
+  <section class="panel active" id="tab-dispatch">
+    <div class="grid two">
+      <div class="card">
+        <h2>New SOS request</h2>
+        <form id="sosForm" autocomplete="off">
+          <label>Patient name <input name="patient_name" required maxlength="80" placeholder="e.g. Rahul Sharma"></label>
+          <label>Phone <input name="phone" maxlength="20" placeholder="optional"></label>
+          <div class="row">
+            <label>Emergency type <select name="emergency_type" id="typeSelect"></select></label>
+            <label>Severity <span class="hint" id="sevLabel">3 &middot; moderate</span>
+              <input type="range" name="severity" id="sevRange" min="1" max="5" value="3">
+            </label>
+          </div>
+          <label>Location
+            <select id="locSelect"></select>
+          </label>
+          <div class="row">
+            <label>Latitude <input name="latitude" id="lat" required></label>
+            <label>Longitude <input name="longitude" id="lon" required></label>
+            <button type="button" class="ghost small" id="geoBtn" title="Use this device's location">My location</button>
+          </div>
+          <label>Description <input name="description" maxlength="255" placeholder="what happened (optional)"></label>
+          <button type="submit" class="danger big">Send SOS</button>
+        </form>
+        <div id="sosResult"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>Dispatcher</h2>
+          <div class="inline">
+            <span class="tag ok">Automatic mode</span>
+            <button class="primary" id="dispatchBtn">Dispatch next</button>
+          </div>
+        </div>
+        <p class="muted">You don't pick an algorithm. Each waiting patient is put in a queue by how serious they are,
+          and each queue uses the algorithm that suits it:</p>
+        <div class="auto-queues">
+          <div class="aq crit"><b>Critical</b> P1&ndash;P2<span>Priority with aging</span></div>
+          <div class="aq urg"><b>Urgent</b> P3<span>Shortest Job First</span></div>
+          <div class="aq rout"><b>Routine</b> P4&ndash;P5<span>First Come First Served</span></div>
+        </div>
+        <p class="muted small">Critical is always served first, then Urgent, then Routine. A patient who waits too long
+          is aged up into a higher queue, so nobody waits forever. Then the ranking module picks the hospital and the
+          transaction manager reserves the unit.</p>
+        <div id="dispatchResult" class="empty">No dispatch yet.</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>Active allocations</h2>
+        <button class="ghost small" id="refreshAlloc">Refresh</button>
+      </div>
+      <div id="allocTable"></div>
+    </div>
+  </section>
+
+  <!-- ============ QUEUE ============ -->
+  <section class="panel" id="tab-queue">
+    <div class="card">
+      <div class="card-head">
+        <h2>Pending queue</h2>
+        <div class="inline">
+          <button class="ghost small" id="seedBtn">Add demo requests</button>
+        </div>
+      </div>
+      <p class="muted" id="queueNote"></p>
+      <div id="queueTable"></div>
+    </div>
+    <div class="card">
+      <h2>Recent requests</h2>
+      <div id="recentTable"></div>
+    </div>
+  </section>
+
+  <!-- ============ HOSPITALS ============ -->
+  <section class="panel" id="tab-hospitals">
+    <div class="card-head">
+      <h2 class="section-title">Hospital capacity <span class="muted small">(simulated data, refreshes every 5 s)</span></h2>
+      <button class="ghost small" id="resetBtn">Reset simulated data</button>
+    </div>
+    <div id="hospitalGrid" class="hospital-grid"></div>
+  </section>
+
+  <!-- ============ SCHEDULER LAB ============ -->
+  <section class="panel" id="tab-schedlab">
+    <div class="card">
+      <div class="card-head">
+        <h2>Scheduler comparison</h2>
+        <div class="inline">
+          <label class="inline-label">Patients
+            <select id="labSource">
+              <option value="real">My real patients (from database)</option>
+              <option value="sample">Sample workload (12 requests)</option>
+            </select></label>
+          <label class="inline-label">Aging every
+            <input type="number" id="agingInput" min="0" max="120" value="10" class="narrow"> min</label>
+          <button class="primary" id="runSchedBtn">Run comparison</button>
+        </div>
+      </div>
+      <p class="muted" id="labIntro"></p>
+      <div id="workloadTable"></div>
+    </div>
+    <div id="schedResults"></div>
+  </section>
+</main>
+
+<div id="toast" class="toast" role="status"></div>
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

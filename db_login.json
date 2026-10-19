@@ -1,0 +1,6 @@
+{
+  "DB_HOST": "localhost",
+  "DB_PORT": 3306,
+  "DB_USER": "sos",
+  "DB_PASSWORD": "sos123"
+}
