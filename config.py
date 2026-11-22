@@ -33,6 +33,10 @@ ISOLATION_LEVEL = "REPEATABLE READ"   # InnoDB default, stated explicitly
 LOCK_WAIT_TIMEOUT_SEC = 5             # how long a transaction waits for a row lock
 MAX_TX_RETRIES = 3                    # retries on deadlock / lock-wait timeout
 
+# Deadlock avoidance (OS): before admitting a patient, run the Banker's safety
+# algorithm for that hospital (bankers.py). Admit only if the state stays safe.
+BANKERS_CHECK = os.environ.get("BANKERS_CHECK", "1") == "1"
+
 # Scheduling settings (OS)
 AGING_INTERVAL_MIN = 10               # every 10 min of waiting improves priority by 1
 

@@ -29,7 +29,14 @@ API (all JSON):
   POST /api/demo/seed                     add demo requests with staggered arrival times
   GET  /api/labs/scheduler/workload       workload for the lab (?source=real -> your patients, sample -> 12 requests)
   POST /api/labs/scheduler                compare scheduling policies {source: "real"|"sample"}
-  POST /api/labs/race                     run the concurrency race
+  POST /api/labs/race                     run the concurrency race {locked, engine: python|procedure}
+  POST /api/labs/deadlock                 deadlock detection demo {ordered: true|false}
+  POST /api/bankers                       Banker's algorithm state of a hospital {hospital_id, request_id?, available?}
+  GET  /api/db/objects                    views, triggers, stored procedures (with their SQL)
+  GET  /api/db/view/<name>                rows of one view
+  GET  /api/db/report/<hospital_id>       CALL sp_hospital_report (two result sets)
+  GET  /api/db/history/<request_id>       trigger-written status history of a request
+  POST /api/db/trigger-demo               show the state-machine trigger refusing an illegal change
   Admin (A): POST /api/admin/hospitals, PUT/DELETE /api/admin/hospitals/<id>,
              POST /api/admin/hospitals/<id>/doctors, PUT/DELETE /api/admin/doctors/<id>,
              GET/POST /api/admin/users, POST /api/admin/users/<id>/active
@@ -50,10 +57,13 @@ from flask.json.provider import DefaultJSONProvider
 
 import admin_ops
 import auth
+import bankers
 import classifier
 import concurrency_lab
 import config
 import db
+import db_objects
+import deadlock_lab
 import init_db
 import ranking
 import routing
@@ -137,6 +147,9 @@ def handle_unexpected(e):
     from werkzeug.exceptions import HTTPException
     if isinstance(e, HTTPException):
         return jsonify({"ok": False, "error": e.description}), e.code
+    if isinstance(e, pymysql.err.OperationalError) and e.args and e.args[0] == db_objects.ER_SIGNAL:
+        # a database trigger refused the change (SIGNAL SQLSTATE '45000')
+        return jsonify({"ok": False, "error": f"Refused by the database: {e.args[1]}"}), 409
     if isinstance(e, pymysql.err.OperationalError) and e.args and e.args[0] in (2003, 1045, 1049):
         return jsonify({"ok": False, "error": f"Database not reachable: {e.args[1]}. "
                                               f"Is MySQL running and did you run init_db.py?"}), 503
@@ -236,6 +249,7 @@ def meta():
         "resource_types": admin_ops.RESOURCE_TYPES,
         "routing": routing.status(),
         "auto_complete": {"on": config.AUTO_COMPLETE, "time_scale": config.CASE_TIME_SCALE},
+        "bankers": config.BANKERS_CHECK,
     })
 
 
@@ -808,8 +822,85 @@ def lab_race():
     d = body()
     result = concurrency_lab.run_race(clients=int(d.get("clients", 6)),
                                       locked=bool(d.get("locked", True)),
-                                      delay_ms=int(d.get("delay_ms", 50)))
+                                      delay_ms=int(d.get("delay_ms", 50)),
+                                      engine=str(d.get("engine", "python")))
     return jsonify({"ok": True, **result})
+
+
+@app.post("/api/labs/deadlock")
+@require_role(*STAFF)
+def lab_deadlock():
+    return jsonify({"ok": True, **deadlock_lab.run(ordered=bool(body().get("ordered", False)))})
+
+
+# ---------------------------------------------------------------------------
+# Banker's algorithm (deadlock avoidance)
+# ---------------------------------------------------------------------------
+@app.post("/api/bankers")
+@require_role(*STAFF)
+def bankers_state():
+    """Banker's matrices + safety check for one hospital. Read-only: `available` only
+    pretends ("what if only N were free?"), nothing in the database changes."""
+    d = body()
+    try:
+        hid = int(d.get("hospital_id") or 0)
+    except (TypeError, ValueError):
+        raise ApiError("hospital_id must be a number")
+    if not db.query_one("SELECT 1 AS x FROM hospitals WHERE hospital_id = %s AND is_lab = 0", (hid,)):
+        raise ApiError("Hospital not found", 404)
+    req = None
+    if d.get("request_id"):
+        req = db.query_one("SELECT * FROM sos_requests WHERE request_id = %s AND is_lab = 0 "
+                           "AND status = 'PENDING'", (int(d["request_id"]),))
+        if not req:
+            raise ApiError("That request is not waiting in the queue", 404)
+    override = {}
+    for t, n in (d.get("available") or {}).items():
+        if t in bankers.RESOURCE_ORDER and str(n).strip() != "":
+            override[t] = max(0, min(int(n), 5000))
+    ev = bankers.evaluate(hid, request=req, available_override=override or None)
+    return jsonify({"ok": True, **ev, "summary": bankers.summary(ev), "enabled": config.BANKERS_CHECK,
+                    "escalation": bankers.ESCALATION, "overridden": sorted(override)})
+
+
+# ---------------------------------------------------------------------------
+# Database objects: views, triggers, stored procedures
+# ---------------------------------------------------------------------------
+@app.get("/api/db/objects")
+@require_role(*STAFF)
+def db_catalog():
+    return jsonify({"ok": True, **db_objects.catalog()})
+
+
+@app.get("/api/db/view/<name>")
+@require_role(*STAFF)
+def db_view(name):
+    return jsonify({"ok": True, "view": name, "rows": db_objects.view_rows(name)})
+
+
+@app.get("/api/db/report/<int:hospital_id>")
+@require_role(*STAFF)
+def db_report(hospital_id):
+    return jsonify({"ok": True, **db_objects.hospital_report(hospital_id)})
+
+
+@app.get("/api/db/history/<int:request_id>")
+@require_role(*STAFF)
+def db_history(request_id):
+    req = db.query_one("SELECT request_id, patient_name, status FROM sos_requests "
+                       "WHERE request_id = %s AND is_lab = 0", (request_id,))
+    if not req:
+        raise ApiError("Request not found", 404)
+    return jsonify({"ok": True, "request": req, "history": db_objects.status_history(request_id),
+                    "triggers_installed": db_objects.triggers_installed()})
+
+
+@app.post("/api/db/trigger-demo")
+@require_role(*STAFF)
+def db_trigger_demo():
+    if not db_objects.triggers_installed():
+        raise ApiError(f"Triggers are not installed. {init_db.TRIGGER_HELP}", 409)
+    return jsonify({"ok": True, **db_objects.trigger_demo()})
 
 
 if __name__ == "__main__":

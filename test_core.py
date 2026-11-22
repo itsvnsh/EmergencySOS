@@ -839,5 +839,337 @@ class AmbulanceTests(unittest.TestCase):
                          "PENDING")
 
 
+# ---------------------------------------------------------------------------
+# Banker's algorithm (deadlock avoidance)
+# ---------------------------------------------------------------------------
+class BankersAlgorithmTests(unittest.TestCase):
+    """The pure algorithm, on the textbook example (Silberschatz: 5 processes, 3 types)."""
+    T = ["A", "B", "C"]
+    P = [
+        {"id": "P0", "allocation": {"A": 0, "B": 1, "C": 0}, "max": {"A": 7, "B": 5, "C": 3}},
+        {"id": "P1", "allocation": {"A": 2, "B": 0, "C": 0}, "max": {"A": 3, "B": 2, "C": 2}},
+        {"id": "P2", "allocation": {"A": 3, "B": 0, "C": 2}, "max": {"A": 9, "B": 0, "C": 2}},
+        {"id": "P3", "allocation": {"A": 2, "B": 1, "C": 1}, "max": {"A": 2, "B": 2, "C": 2}},
+        {"id": "P4", "allocation": {"A": 0, "B": 0, "C": 2}, "max": {"A": 4, "B": 3, "C": 3}},
+    ]
+
+    def test_textbook_state_is_safe(self):
+        import bankers
+        r = bankers.check_safety({"A": 3, "B": 3, "C": 2}, self.P, self.T)
+        self.assertTrue(r["safe"])
+        self.assertEqual(r["sequence"][0], "P1")
+        self.assertEqual(sorted(r["sequence"]), ["P0", "P1", "P2", "P3", "P4"])
+        self.assertEqual(r["need"]["P0"], {"A": 7, "B": 4, "C": 3})
+        # Work grows by each finished process's allocation
+        first = r["steps"][0]
+        self.assertEqual(first["work_after"], {"A": 5, "B": 3, "C": 2})
+
+    def test_nothing_free_is_unsafe(self):
+        import bankers
+        r = bankers.check_safety({"A": 0, "B": 0, "C": 0}, self.P, self.T)
+        self.assertFalse(r["safe"])
+        self.assertEqual(len(r["blocked"]), 5)
+
+    def test_textbook_requests(self):
+        import bankers
+        # P1 requests (1,0,2): pretend to grant it -> still safe, so it is granted (textbook answer)
+        state = [dict(p) for p in self.P]
+        state[1] = {**state[1], "allocation": {"A": 3, "B": 0, "C": 2}}
+        self.assertTrue(bankers.check_safety({"A": 2, "B": 3, "C": 0}, state, self.T)["safe"])
+        # then P0 requests (0,2,0): granting it would be unsafe, so P0 must wait (textbook answer)
+        state[0] = {**state[0], "allocation": {"A": 0, "B": 3, "C": 0}}
+        self.assertFalse(bankers.check_safety({"A": 2, "B": 1, "C": 0}, state, self.T)["safe"])
+        # a new process asking for more than is free must wait; a small one is admitted
+        r = bankers.request_check({"A": 3, "B": 3, "C": 2}, self.P,
+                                  {"id": "X", "allocation": {"A": 4}, "max": {"A": 4}}, self.T)
+        self.assertEqual((r["verdict"], r["short_of"]), ("must_wait", ["A"]))
+        r = bankers.request_check({"A": 3, "B": 3, "C": 2}, self.P,
+                                  {"id": "Y", "allocation": {"A": 1}, "max": {"A": 1}}, self.T)
+        self.assertEqual(r["verdict"], "safe")
+
+    def test_max_claim_only_owned_types(self):
+        import bankers
+        mx = bankers.max_claim("CARDIAC", {"ICU_BED": 1, "AMBULANCE": 1}, {"ICU_BED", "AMBULANCE", "VENTILATOR"})
+        self.assertEqual(mx, {"ICU_BED": 1, "AMBULANCE": 1, "VENTILATOR": 1})      # no OT owned -> no OT claim
+
+    def test_holder_of_scarce_unit_lets_others_finish(self):
+        """OT all taken, but by a case that will finish and give it back -> still safe."""
+        import bankers
+        maternity = {"id": "M", "allocation": {"OPERATION_THEATRE": 1}, "max": {"OPERATION_THEATRE": 1}}
+        cardiac = {"id": "C", "allocation": {"ICU_BED": 1, "AMBULANCE": 1},
+                   "max": {"ICU_BED": 1, "AMBULANCE": 1, "OPERATION_THEATRE": 1}}
+        avail = {"ICU_BED": 3, "OPERATION_THEATRE": 0, "AMBULANCE": 2}
+        self.assertEqual(bankers.request_check(avail, [maternity], cardiac)["verdict"], "safe")
+        self.assertEqual(bankers.request_check(avail, [], cardiac)["verdict"], "unsafe")
+
+
+@unittest.skipUnless(DB_OK, "MySQL not reachable")
+class BankersDatabaseTests(unittest.TestCase):
+    def setUp(self):
+        import init_db
+        init_db.initialise()
+        self.saved = config.BANKERS_CHECK
+
+    def tearDown(self):
+        config.BANKERS_CHECK = self.saved
+
+    def _cardiac(self):
+        import db
+        from app import insert_request
+        rid = insert_request("Banker Test", None, 30.2683, 77.9947, "CARDIAC", 5, None)[0]
+        return db.query_one("SELECT * FROM sos_requests WHERE request_id = %s", (rid,))
+
+    def _starve(self, hid):
+        import db
+        db.execute("UPDATE resources SET available_units = 0 WHERE hospital_id = %s "
+                   "AND resource_type IN ('VENTILATOR', 'OPERATION_THEATRE')", (hid,))
+
+    def test_unsafe_hospital_is_skipped(self):
+        import ranking
+        import transaction_manager as tm
+        config.BANKERS_CHECK = True
+        req = self._cardiac()
+        ranked = ranking.rank_for_request(req)
+        best = ranked[0]["hospital_id"]
+        self._starve(best)               # ICU bed + ambulance free, but no OT / ventilator left
+        out = tm.reserve(req["request_id"], ranked=ranked)
+        self.assertEqual(out["attempts"][0]["result"], "unsafe")
+        self.assertEqual(out["attempts"][0]["bankers"]["verdict"], "unsafe")
+        self.assertEqual(out["status"], "allocated")
+        self.assertNotEqual(out["hospital"]["hospital_id"], best)
+        self.assertEqual(out["bankers"]["verdict"], "safe")
+        import db
+        self.assertIsNotNone(db.query_one("SELECT 1 AS x FROM audit_log WHERE event_type = 'BANKERS_UNSAFE' "
+                                          "AND request_id = %s", (req["request_id"],)))
+
+    def test_check_can_be_switched_off(self):
+        import ranking
+        import transaction_manager as tm
+        config.BANKERS_CHECK = False
+        req = self._cardiac()
+        ranked = ranking.rank_for_request(req)
+        self._starve(ranked[0]["hospital_id"])
+        out = tm.reserve(req["request_id"], ranked=ranked)
+        self.assertEqual(out["hospital"]["hospital_id"], ranked[0]["hospital_id"])
+
+    def test_evaluate_reads_active_cases(self):
+        import bankers
+        import transaction_manager as tm
+        req = self._cardiac()
+        out = tm.reserve(req["request_id"])
+        ev = bankers.evaluate(out["hospital"]["hospital_id"])
+        self.assertEqual(ev["verdict"], "safe")
+        proc = [p for p in ev["processes"] if p["id"] == f"R{req['request_id']}"][0]
+        self.assertEqual(proc["allocation"], {"ICU_BED": 1, "AMBULANCE": 1})
+        self.assertEqual(proc["max"]["OPERATION_THEATRE"], 1)
+        # what-if: no OT and no ventilator free -> that same state becomes unsafe
+        ev = bankers.evaluate(out["hospital"]["hospital_id"],
+                              available_override={"OPERATION_THEATRE": 0, "VENTILATOR": 0})
+        self.assertEqual(ev["verdict"], "unsafe")
+
+    def test_bankers_api(self):
+        from app import app
+        c = app.test_client()
+        login(c, "dispatcher", "dispatch123")
+        req = self._cardiac()
+        r = c.post("/api/bankers", json={"hospital_id": 1, "request_id": req["request_id"]}).get_json()
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["verdict"], "safe")
+        self.assertTrue(r["new_process"]["is_new"])
+        r = c.post("/api/bankers", json={"hospital_id": 1, "request_id": req["request_id"],
+                                         "available": {"OPERATION_THEATRE": 0, "VENTILATOR": 0}}).get_json()
+        self.assertEqual(r["verdict"], "unsafe")
+        self.assertEqual(c.post("/api/bankers", json={"hospital_id": 999}).status_code, 404)
+
+
+# ---------------------------------------------------------------------------
+# Views, triggers, stored procedures (schema_objects.sql)
+# ---------------------------------------------------------------------------
+class SqlSplitterTests(unittest.TestCase):
+    def test_delimiter_blocks(self):
+        import init_db
+        sql = ("-- c\nCREATE TABLE t (a INT);\nDELIMITER $$\nCREATE TRIGGER x BEFORE INSERT ON t FOR EACH ROW\n"
+               "BEGIN\n  SET NEW.a = 1;\n  SET NEW.a = 2;\nEND$$\nDELIMITER ;\nSELECT 1;\n")
+        st = init_db._split_sql(sql)
+        self.assertEqual(len(st), 3)
+        self.assertTrue(st[1].startswith("CREATE TRIGGER") and st[1].endswith("END"))
+        self.assertIn("SET NEW.a = 2;", st[1])
+
+
+def _triggers_on():
+    if not DB_OK:
+        return False
+    import db_objects
+    return db_objects.triggers_installed()
+
+
+@unittest.skipUnless(DB_OK, "MySQL not reachable")
+class DbObjectsTests(unittest.TestCase):
+    def setUp(self):
+        import init_db
+        init_db.initialise()
+
+    def test_views_and_procedures_installed(self):
+        import db_objects
+        cat = db_objects.catalog()
+        self.assertEqual(len(cat["views"]), 5)
+        self.assertEqual(len(cat["procedures"]), 2)
+        self.assertTrue(all(v["installed"] for v in cat["views"] + cat["procedures"]))
+        self.assertTrue(all(o["about"] and o["sql"].startswith("CREATE") for o in
+                            cat["views"] + cat["triggers"] + cat["procedures"]))
+
+    def test_views_match_the_tables(self):
+        import db
+        import db_objects
+        rows = db_objects.view_rows("v_hospital_capacity", limit=500)
+        self.assertEqual(len(rows), 8 * 5)                                  # 8 hospitals x 5 unit types
+        icu = db.query_one("SELECT SUM(available_units) AS n FROM resources r JOIN hospitals h USING (hospital_id) "
+                           "WHERE h.is_lab = 0 AND r.resource_type = 'ICU_BED'")["n"]
+        self.assertEqual(sum(r["available_units"] for r in rows if r["resource_type"] == "ICU_BED"), icu)
+        with self.assertRaises(ValueError):
+            db_objects.view_rows("users")                                   # only our views
+
+    def test_pending_queue_view_ages_like_the_scheduler(self):
+        import db_objects
+        import scheduler
+        from app import insert_request
+        rid = insert_request("Aging", None, 30.30, 78.03, "GENERAL", 2, None, minutes_ago=25)[0]
+        row = [r for r in db_objects.view_rows("v_pending_queue") if r["request_id"] == rid][0]
+        self.assertEqual(row["effective_priority"],
+                         scheduler.effective_priority(row["priority"], row["waiting_min"], 10))
+        self.assertLess(row["effective_priority"], row["priority"])
+
+    def test_active_cases_view(self):
+        import db_objects
+        import transaction_manager as tm
+        from app import insert_request
+        out = tm.reserve(insert_request("View", None, 30.2683, 77.9947, "CARDIAC", 5, None)[0])
+        rows = db_objects.view_rows("v_active_cases")
+        self.assertEqual([r["allocation_id"] for r in rows], [out["allocation_id"]])
+        self.assertEqual(rows[0]["ambulance"], "ON ROAD")
+
+    def test_hospital_report_procedure_two_result_sets(self):
+        import db_objects
+        r = db_objects.hospital_report(1)
+        self.assertEqual(len(r["units"]), 5)
+        self.assertEqual(len(r["doctors"]), 5)
+
+    def test_race_through_stored_procedure_books_once(self):
+        import concurrency_lab
+        r = concurrency_lab.run_race(6, locked=True, delay_ms=30, engine="procedure")
+        self.assertEqual(r["engine"], "procedure")
+        self.assertEqual(r["bookings"], 1)
+        self.assertEqual(r["rolled_back"], 5)
+        self.assertTrue(r["consistent"])
+
+    def test_db_api(self):
+        from app import app
+        c = app.test_client()
+        login(c, "dispatcher", "dispatch123")
+        cat = c.get("/api/db/objects").get_json()
+        self.assertEqual(len(cat["views"]), 5)
+        self.assertEqual(c.get("/api/db/view/v_doctor_load").status_code, 200)
+        self.assertEqual(c.get("/api/db/view/users").status_code, 400)
+        self.assertEqual(len(c.get("/api/db/report/1").get_json()["units"]), 5)
+        r = c.post("/api/labs/race", json={"locked": True, "engine": "procedure", "clients": 4}).get_json()
+        self.assertEqual(r["bookings"], 1)
+
+    @unittest.skipUnless(_triggers_on(), "triggers not installed (python setup_mysql.py --triggers-only)")
+    def test_state_machine_trigger(self):
+        import db_objects
+        out = db_objects.trigger_demo()
+        self.assertEqual([s["ok"] for s in out["steps"]], [True, True, False])     # COMPLETED -> PENDING refused
+        self.assertIn("COMPLETED -> PENDING", out["steps"][2]["message"])
+        self.assertEqual([(h["old_status"], h["new_status"]) for h in out["history"]],
+                         [(None, "PENDING"), ("PENDING", "ALLOCATED"), ("ALLOCATED", "COMPLETED")])
+
+    @unittest.skipUnless(_triggers_on(), "triggers not installed (python setup_mysql.py --triggers-only)")
+    def test_history_follows_a_real_case(self):
+        import db_objects
+        import transaction_manager as tm
+        from app import insert_request
+        rid = insert_request("Hist", None, 30.2683, 77.9947, "CARDIAC", 5, None)[0]
+        out = tm.reserve(rid)
+        tm.release(out["allocation_id"])
+        self.assertEqual([h["new_status"] for h in db_objects.status_history(rid)],
+                         ["PENDING", "ALLOCATED", "COMPLETED"])
+
+    @unittest.skipUnless(_triggers_on(), "triggers not installed (python setup_mysql.py --triggers-only)")
+    def test_allocation_must_stay_in_one_hospital(self):
+        import pymysql
+        import db
+        from app import insert_request
+        rid = insert_request("Cross", None, 30.2683, 77.9947, "CARDIAC", 5, None)[0]
+        other_unit = db.query_one("SELECT resource_id FROM resources WHERE hospital_id = 2 "
+                                  "AND resource_type = 'ICU_BED'")["resource_id"]
+        with self.assertRaises(pymysql.err.OperationalError) as cm:
+            db.execute("INSERT INTO allocations (request_id, hospital_id, resource_id) VALUES (%s, 1, %s)",
+                       (rid, other_unit))
+        self.assertIn("does not belong", cm.exception.args[1])
+
+    @unittest.skipUnless(_triggers_on(), "triggers not installed (python setup_mysql.py --triggers-only)")
+    def test_capacity_alert_trigger(self):
+        import db
+        db.execute("UPDATE resources SET available_units = 0 WHERE hospital_id = 1 AND resource_type = 'ICU_BED'")
+        row = db.query_one("SELECT event_type, details FROM audit_log ORDER BY log_id DESC LIMIT 1")
+        self.assertEqual(row["event_type"], "CAPACITY_ALERT")
+        self.assertIn("ICU BED", row["details"])
+        db.execute("UPDATE resources SET available_units = 2 WHERE hospital_id = 1 AND resource_type = 'ICU_BED'")
+        self.assertEqual(db.query_one("SELECT event_type FROM audit_log ORDER BY log_id DESC LIMIT 1")["event_type"],
+                         "CAPACITY_RESTORED")
+
+
+# ---------------------------------------------------------------------------
+# Deadlock detection (wait-for graph) and recovery
+# ---------------------------------------------------------------------------
+class WaitForGraphTests(unittest.TestCase):
+    def test_cycle_found(self):
+        from deadlock_lab import find_cycle
+        self.assertEqual(find_cycle({"T1": ["T2"], "T2": ["T1"]}), ["T1", "T2", "T1"])
+        cyc = find_cycle({"T1": ["T2"], "T2": ["T3"], "T3": ["T1"], "T4": ["T1"]})
+        self.assertEqual(cyc[0], cyc[-1])
+        self.assertEqual(sorted(cyc[:-1]), ["T1", "T2", "T3"])
+
+    def test_no_cycle(self):
+        from deadlock_lab import find_cycle
+        self.assertIsNone(find_cycle({"T2": ["T1"]}))                       # plain waiting
+        self.assertIsNone(find_cycle({"T1": ["T2"], "T2": ["T3"], "T4": ["T3"]}))
+        self.assertIsNone(find_cycle({}))
+
+
+@unittest.skipUnless(DB_OK, "MySQL not reachable")
+class DeadlockLabTests(unittest.TestCase):
+    def setUp(self):
+        import init_db
+        init_db.initialise()
+
+    def test_opposite_order_deadlocks_and_recovers(self):
+        import deadlock_lab
+        r = deadlock_lab.run(ordered=False)
+        self.assertTrue(r["deadlock"], r["events"])
+        self.assertEqual(r["cycle"][0], r["cycle"][-1])
+        self.assertIn(r["victim"], ("T1", "T2"))
+        self.assertEqual(len(r["graph"]["edges"]), 2)                       # T1 -> T2 and T2 -> T1
+        # recovery: both transactions finally commit, the victim after a retry
+        self.assertTrue(all(v.startswith("committed") for v in r["outcome"].values()), r["outcome"])
+        self.assertIn("retry", r["outcome"][r["victim"]])
+
+    def test_global_order_never_deadlocks(self):
+        import deadlock_lab
+        r = deadlock_lab.run(ordered=True)
+        self.assertFalse(r["deadlock"])
+        self.assertIsNone(r["victim"])
+        self.assertEqual(r["outcome"], {"T1": "committed", "T2": "committed"})
+        self.assertTrue(any(e["kind"] == "wait" and e["tx"] == "T2" for e in r["events"]))
+
+    def test_api(self):
+        from app import app
+        c = app.test_client()
+        login(c, "dispatcher", "dispatch123")
+        r = c.post("/api/labs/deadlock", json={"ordered": True}).get_json()
+        self.assertTrue(r["ok"])
+        self.assertFalse(r["deadlock"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -10,11 +10,19 @@ live availability). Counts can be changed later from the admin console.
 """
 import os
 
+import pymysql
+
 import auth
 import config
 from db import get_connection
 
-SCHEMA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "schema.sql")
+HERE = os.path.dirname(os.path.abspath(__file__))
+ER_TRIGGER_NEEDS_SUPER = 1419
+TRIGGER_HELP = ("MySQL has binary logging on and only lets an admin allow triggers. "
+                "Run once:  python setup_mysql.py --triggers-only   then  python init_db.py")
+_warned = []
+SCHEMA_FILE = os.path.join(HERE, "schema.sql")                # tables, keys, constraints
+OBJECTS_FILE = os.path.join(HERE, "schema_objects.sql")       # views, triggers, stored procedures
 
 # (name, area, lat, lon, phone, {resource: (total, available)})
 # AMBULANCE = the hospital's own fleet (simulated); a case needs one to be brought in
@@ -69,9 +77,28 @@ LAB_AMBULANCES = 50
 
 
 def _split_sql(text):
-    """Split schema.sql into single statements (comments removed)."""
-    lines = [ln for ln in text.splitlines() if not ln.strip().startswith("--")]
-    return [s.strip() for s in "\n".join(lines).split(";") if s.strip()]
+    """Split a .sql file into single statements (whole-line comments removed).
+
+    A statement ends at a line that ends with the current delimiter. Like the mysql
+    client, `DELIMITER $$` changes it: trigger and procedure bodies contain ';'
+    themselves, so they are written between `DELIMITER $$` and `DELIMITER ;`."""
+    statements, buf, delim = [], [], ";"
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("--") or (not buf and not stripped):
+            continue
+        if stripped.upper().startswith("DELIMITER "):
+            delim = stripped.split(None, 1)[1]
+            continue
+        if stripped.endswith(delim):
+            buf.append(line.rstrip()[: -len(delim)])
+            statements.append("\n".join(buf).strip())
+            buf = []
+        else:
+            buf.append(line)
+    if "\n".join(buf).strip():
+        statements.append("\n".join(buf).strip())
+    return [s for s in statements if s]
 
 
 def create_database():
@@ -85,15 +112,30 @@ def create_database():
 
 
 def create_tables():
-    with open(SCHEMA_FILE, encoding="utf-8") as f:
-        statements = _split_sql(f.read())
+    statements = []
+    for path in (SCHEMA_FILE, OBJECTS_FILE):      # tables first, then views/triggers/procedures
+        with open(path, encoding="utf-8") as f:
+            statements += _split_sql(f.read())
+    skipped = []
     conn = get_connection(autocommit=True)
     try:
         with conn.cursor() as cur:
             for stmt in statements:
-                cur.execute(stmt)
+                try:
+                    cur.execute(stmt)
+                except pymysql.err.OperationalError as e:
+                    # binary logging on + app user not SUPER: MySQL refuses CREATE TRIGGER.
+                    # Everything else still works, so skip the triggers and say how to fix it.
+                    if e.args and e.args[0] == ER_TRIGGER_NEEDS_SUPER and stmt.upper().startswith("CREATE TRIGGER"):
+                        skipped.append(stmt.split()[2])
+                        continue
+                    raise
     finally:
         conn.close()
+    if skipped and not _warned:
+        _warned.append(True)
+        print(f"WARNING: {len(skipped)} database triggers were skipped. {TRIGGER_HELP}")
+    return skipped
 
 
 def load_sample_data():

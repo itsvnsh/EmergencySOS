@@ -7,8 +7,12 @@ app, so the app itself never needs the root/admin password:
     databases : emergencysos, emergencysos_test
     user      : sos@localhost   (password of your choice, default sos123)
 
+It also allows the app user to create the database TRIGGERS
+(log_bin_trust_function_creators = 1, needed when binary logging is on).
+
 Usage:
-    python setup_mysql.py
+    python setup_mysql.py                   # full setup
+    python setup_mysql.py --triggers-only   # already set up: only allow triggers
 
 You are asked for an ADMIN login once (root, or whoever can create users).
 If you use XAMPP, root has no password: just press Enter when asked.
@@ -80,6 +84,15 @@ def main():
             if input("  Try again? [Y/n]: ").strip().lower() == "n":
                 sys.exit("Stopped. If you forgot the root password, see the README troubleshooting.")
 
+    # already set up before triggers were added? `python setup_mysql.py --triggers-only`
+    if "--triggers-only" in sys.argv:
+        with admin.cursor() as cur:
+            ok = allow_triggers(cur)
+        admin.close()
+        if ok:
+            print("\nDone. Now run:  python init_db.py")
+        return
+
     # ---- 2. app user details ----
     app_user = ask("New app user to create", "sos")
     if not re.fullmatch(r"[A-Za-z0-9_]{1,32}", app_user):
@@ -99,6 +112,7 @@ def main():
                 cur.execute(f"GRANT ALL PRIVILEGES ON `{db}`.* TO %s@'localhost'", (app_user,))
             cur.execute("FLUSH PRIVILEGES")
             print(f"  user {app_user}@localhost: ok (full rights on {', '.join(DATABASES)} only)")
+            allow_triggers(cur)
         admin.commit()
     except pymysql.err.MySQLError as e:
         sys.exit(f"\nERROR while creating databases/user: {explain(e)}")
@@ -126,6 +140,23 @@ Next steps (Python version):
 Java version: start it with this login instead of root:
     PowerShell:  $env:DB_USER="{app_user}"; $env:DB_PASSWORD="<the password>"; mvn spring-boot:run
 """)
+
+
+def allow_triggers(cur):
+    """MySQL 8 has binary logging on by default. Then only a SUPER user may create
+    triggers, unless log_bin_trust_function_creators = 1. The app user is not SUPER
+    (on purpose), so switch this on once, as admin. PERSIST keeps it after a restart."""
+    for stmt in ("SET PERSIST log_bin_trust_function_creators = 1",    # MySQL 8
+                 "SET GLOBAL log_bin_trust_function_creators = 1"):    # MariaDB / XAMPP
+        try:
+            cur.execute(stmt)
+            print("  triggers allowed for the app user (log_bin_trust_function_creators = 1): ok")
+            return True
+        except pymysql.err.MySQLError as e:
+            last = e
+    print(f"  WARNING: could not allow triggers: {explain(last)}\n"
+          "           The app still works, but init_db.py will skip the database triggers.")
+    return False
 
 
 if __name__ == "__main__":

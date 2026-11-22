@@ -14,6 +14,11 @@ LAST ICU bed of the "Concurrency Lab Hospital" at the same moment.
                 the others wait, then see 0 free and ROLL BACK.
                 Result: exactly 1 booking, counter consistent.
 
+engine="procedure" runs the locked version through the STORED PROCEDURE
+                sp_allocate_unit (schema_objects.sql) instead of the Python
+                transaction manager: same lock order, written in pure SQL,
+                same result.
+
 delay_ms adds a deliberate pause between the check and the update. The real
 gap is tiny, so without it the unsafe version only fails SOMETIMES. With the
 delay it fails EVERY time. The locked version gives the same correct result
@@ -24,8 +29,13 @@ Run from the command line:   python concurrency_lab.py
 import threading
 import time
 
+import pymysql
+
+import config
 import db
 import transaction_manager as tm
+
+ENGINES = ("python", "procedure")
 
 
 def _lab_ids():
@@ -100,9 +110,30 @@ def _unsafe_book(conn, request_id, lab, delay_ms):
         conn.close()
 
 
-def run_race(clients=6, locked=True, delay_ms=50):
+def _procedure_book(request_id, lab, delay_ms):
+    """Book through the stored procedure. Deadlocks / lock timeouts are retried like in Python."""
+    for attempt in range(1, config.MAX_TX_RETRIES + 1):
+        conn = db.get_connection(autocommit=True)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("CALL sp_allocate_unit(%s, %s, %s, %s, @result, @allocation_id)",
+                            (request_id, lab["hospital_id"], config.CASE_TIME_SCALE, delay_ms))
+                cur.execute("SELECT @result AS result, @allocation_id AS allocation_id")
+                return cur.fetchone()
+        except pymysql.err.OperationalError as e:
+            if not (e.args and e.args[0] in (db.ER_LOCK_DEADLOCK, db.ER_LOCK_WAIT_TIMEOUT)):
+                raise
+            time.sleep(0.03 * attempt)
+        finally:
+            conn.close()
+    return {"result": "lock_error", "allocation_id": None}
+
+
+def run_race(clients=6, locked=True, delay_ms=50, engine="python"):
     clients = max(2, min(int(clients), 20))
     delay_ms = max(0, min(int(delay_ms), 500))
+    if engine not in ENGINES:
+        raise ValueError(f"engine must be one of {', '.join(ENGINES)}")
     lab = reset_lab(beds=1)
     request_ids = _create_lab_requests(clients)
     lab_candidate = {"hospital_id": lab["hospital_id"], "resource_id": lab["resource_id"],
@@ -118,7 +149,10 @@ def run_race(clients=6, locked=True, delay_ms=50):
         barrier.wait()
         start = time.perf_counter()
         try:
-            if locked:
+            if locked and engine == "procedure":
+                out = _procedure_book(rid, lab, delay_ms)
+                outcome = "allocated" if out["result"] == "allocated" else "rolled_back"
+            elif locked:
                 out = tm.reserve(rid, ranked=[lab_candidate], delay_ms=delay_ms)
                 outcome = "allocated" if out["status"] == "allocated" else "rolled_back"
             else:
@@ -143,13 +177,19 @@ def run_race(clients=6, locked=True, delay_ms=50):
     consistent = bookings <= counter["total_units"] and \
         bookings + counter["available_units"] == counter["total_units"]
 
-    mode = "LOCKED (SELECT ... FOR UPDATE)" if locked else "UNLOCKED (no transaction)"
+    if not locked:
+        mode = "UNLOCKED (no transaction)"
+    elif engine == "procedure":
+        mode = "LOCKED (stored procedure sp_allocate_unit)"
+    else:
+        mode = "LOCKED (SELECT ... FOR UPDATE)"
     db.execute("INSERT INTO audit_log (event_type, hospital_id, details) VALUES ('LAB_RACE', %s, %s)",
                (lab["hospital_id"], f"{mode}: {clients} clients, 1 bed, delay {delay_ms} ms -> "
                                     f"{bookings} booking(s), counter {counter['available_units']}, "
                                     f"{'consistent' if consistent else 'INCONSISTENT'}"))
     return {
         "mode": "locked" if locked else "unlocked",
+        "engine": engine if locked else "none",
         "mode_label": mode,
         "clients": clients,
         "delay_ms": delay_ms,
@@ -164,8 +204,8 @@ def run_race(clients=6, locked=True, delay_ms=50):
 
 
 if __name__ == "__main__":
-    for locked in (False, True):
-        r = run_race(6, locked=locked, delay_ms=50)
-        print(f"{r['mode_label']:32} bookings={r['bookings']}  rolled back={r['rolled_back']}  "
+    for locked, engine in ((False, "python"), (True, "python"), (True, "procedure")):
+        r = run_race(6, locked=locked, delay_ms=50, engine=engine)
+        print(f"{r['mode_label']:44} bookings={r['bookings']}  rolled back={r['rolled_back']}  "
               f"counter={r['final_available']}  consistent={r['consistent']}")
     reset_lab()

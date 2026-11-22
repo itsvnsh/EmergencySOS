@@ -9,6 +9,7 @@
 -- ============================================================
 
 SET FOREIGN_KEY_CHECKS = 0;
+DROP TABLE IF EXISTS request_status_history;
 DROP TABLE IF EXISTS audit_log;
 DROP TABLE IF EXISTS users;
 DROP TABLE IF EXISTS allocations;
@@ -198,3 +199,21 @@ CREATE TABLE audit_log (
 ) ENGINE = InnoDB;
 
 CREATE INDEX idx_audit_time ON audit_log (created_at);
+
+-- ------------------------------------------------------------
+-- 7. Request status history - written ONLY by triggers
+--    (see schema_objects.sql), never by application code. It is
+--    the process-state timeline of every SOS request:
+--    NULL -> PENDING -> ALLOCATED -> COMPLETED   (or -> CANCELLED)
+-- ------------------------------------------------------------
+CREATE TABLE request_status_history (
+    history_id   BIGINT AUTO_INCREMENT PRIMARY KEY,
+    request_id   INT NOT NULL,
+    old_status   ENUM('PENDING','ALLOCATED','COMPLETED','CANCELLED') NULL,
+    new_status   ENUM('PENDING','ALLOCATED','COMPLETED','CANCELLED') NOT NULL,
+    changed_at   TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    CONSTRAINT fk_hist_request FOREIGN KEY (request_id)
+        REFERENCES sos_requests(request_id) ON DELETE CASCADE
+) ENGINE = InnoDB;
+
+CREATE INDEX idx_hist_request ON request_status_history (request_id, changed_at);

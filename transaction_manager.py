@@ -6,11 +6,13 @@ Every reservation is ONE transaction:
     SET TRANSACTION ISOLATION LEVEL REPEATABLE READ
     START TRANSACTION
       1. SELECT ... FROM sos_requests WHERE id = ?  FOR UPDATE   (lock the request)
-      2. SELECT ... FROM resources    WHERE id = ?  FOR UPDATE   (lock the unit counter)
-      3. SELECT ... FROM doctors      WHERE ...     FOR UPDATE   (lock one doctor)
-      4. SELECT ... FROM resources    WHERE AMBULANCE FOR UPDATE   (lock the ambulance fleet)
-      5. re-check: request still PENDING? unit still free? ambulance free?
-      6. UPDATE counters, mark request ALLOCATED, INSERT allocation + audit row
+      2. SELECT ... FROM hospitals    WHERE id = ?  FOR UPDATE   (one admission at a time per hospital)
+      3. SELECT ... FROM resources    WHERE id = ?  FOR UPDATE   (lock the unit counter)
+      4. SELECT ... FROM doctors      WHERE ...     FOR UPDATE   (lock one doctor)
+      5. SELECT ... FROM resources    WHERE AMBULANCE FOR UPDATE   (lock the ambulance fleet)
+      6. re-check: request still PENDING? unit still free? ambulance free?
+      7. Banker's algorithm: is the hospital still in a SAFE state after admitting? (bankers.py)
+      8. UPDATE counters, mark request ALLOCATED, INSERT allocation + audit row
     COMMIT                       (or ROLLBACK if any check fails)
 
 Two resources, all-or-nothing: the bed AND the ambulance are taken in the same
@@ -20,9 +22,14 @@ so the "hold and wait" condition for deadlock cannot occur.
 Mutual exclusion: SELECT ... FOR UPDATE takes an exclusive row lock, so two
 transactions can never both read "1 bed free" and both take it.
 
-Deadlock avoidance: every transaction locks rows in the SAME order
-(request -> care unit -> doctor -> ambulance -> allocation). With one global
-order a circular wait cannot form (deadlock_lab.py shows what happens without it).
+Deadlock prevention (row locks): every transaction locks rows in the SAME order
+(request -> hospital -> care unit -> doctor -> ambulance -> allocation). With one
+global order a circular wait cannot form (deadlock_lab.py shows what happens without it).
+
+Deadlock avoidance (patients): a hospital admits a patient only if the Banker's
+safety algorithm still finds a safe sequence for every patient it holds, in their
+worst case (bankers.py). The hospital row lock in step 2 makes these checks run
+one at a time per hospital, so two admissions cannot both pass on stale numbers.
 
 Stale ranking: the ranking is computed from a snapshot BEFORE the transaction.
 If the chosen hospital filled up meanwhile, the locked re-check fails, we
@@ -35,6 +42,7 @@ import time
 
 import pymysql
 
+import bankers
 import config
 import db
 from ranking import rank_for_request
@@ -86,7 +94,8 @@ def _try_reserve(conn, request_id, cand, delay_ms=0):
     _begin(conn)
     with conn.cursor() as cur:
         # (1) lock the request
-        cur.execute("SELECT request_id, status, required_specialist, est_handling_min FROM sos_requests "
+        cur.execute("SELECT request_id, patient_name, status, emergency_type, required_resource, "
+                    "required_specialist, est_handling_min FROM sos_requests "
                     "WHERE request_id = %s FOR UPDATE", (request_id,))
         req = cur.fetchone()
         if not req:
@@ -96,7 +105,11 @@ def _try_reserve(conn, request_id, cand, delay_ms=0):
             conn.rollback()
             return {"result": "not_pending", "status": req["status"]}
 
-        # (2) lock the unit counter and re-check availability
+        # (2) one admission decision at a time per hospital (needed by the Banker's check)
+        cur.execute("SELECT hospital_id FROM hospitals WHERE hospital_id = %s FOR UPDATE",
+                    (cand["hospital_id"],))
+
+        # (3) lock the unit counter and re-check availability
         cur.execute("SELECT resource_id, available_units FROM resources "
                     "WHERE resource_id = %s FOR UPDATE", (cand["resource_id"],))
         res = cur.fetchone()
@@ -106,7 +119,7 @@ def _try_reserve(conn, request_id, cand, delay_ms=0):
             conn.rollback()
             return {"result": "no_unit"}
 
-        # (3) lock one doctor: required specialist first, else a general physician
+        # (4) lock one doctor: required specialist first, else a general physician
         doctor = None
         specs = [req["required_specialist"]]
         if req["required_specialist"] != "GENERAL_PHYSICIAN":
@@ -121,7 +134,7 @@ def _try_reserve(conn, request_id, cand, delay_ms=0):
             if doctor:
                 break
 
-        # (4) lock the hospital's ambulance fleet: the patient must be brought in
+        # (5) lock the hospital's ambulance fleet: the patient must be brought in
         cur.execute("SELECT resource_id, available_units FROM resources "
                     "WHERE hospital_id = %s AND resource_type = 'AMBULANCE' FOR UPDATE",
                     (cand["hospital_id"],))
@@ -130,7 +143,18 @@ def _try_reserve(conn, request_id, cand, delay_ms=0):
             conn.rollback()                # the bed is not kept either: all-or-nothing
             return {"result": "no_ambulance"}
 
-        # (5) all checks passed -> update everything inside the same transaction
+        # (6) Banker's algorithm: admit only if the hospital stays in a SAFE state.
+        # Every lock is held, so these plain reads see the latest committed state.
+        verdict = None
+        if bankers.enabled():
+            ev = bankers.evaluate(cand["hospital_id"], request=req, cur=cur)
+            verdict = {"verdict": ev["verdict"], "summary": bankers.summary(ev),
+                       "sequence": ev["sequence_labels"], "blocked": ev["blocked_labels"]}
+            if ev["verdict"] != "safe":
+                conn.rollback()
+                return {"result": "unsafe", "bankers": verdict}
+
+        # (7) all checks passed -> update everything inside the same transaction
         cur.execute("UPDATE resources SET available_units = available_units - 1 "
                     "WHERE resource_id = %s", (cand["resource_id"],))
         cur.execute("UPDATE resources SET available_units = available_units - 1 "
@@ -160,7 +184,7 @@ def _try_reserve(conn, request_id, cand, delay_ms=0):
                      f"({amb['available_units'] - 1} left)",
                      request_id, cand["hospital_id"])
     conn.commit()
-    return {"result": "allocated", "allocation_id": allocation_id,
+    return {"result": "allocated", "allocation_id": allocation_id, "bankers": verdict,
             "doctor": doctor, "units_before": res["available_units"],
             "ambulance": {"resource_id": amb["resource_id"], "left": amb["available_units"] - 1,
                           "back_in_sec": amb_sec}}
@@ -192,22 +216,28 @@ def reserve(request_id, ranked=None, delay_ms=0):
         outcome = _with_retry(_try_reserve, request_id, cand, delay_ms)
         attempts.append({"hospital_id": cand["hospital_id"], "hospital": cand.get("name"),
                          "rank": cand.get("rank"), "score": cand.get("score"),
-                         "result": outcome["result"], "tx_attempts": outcome.get("tx_attempts")})
+                         "result": outcome["result"], "tx_attempts": outcome.get("tx_attempts"),
+                         "bankers": outcome.get("bankers")})
 
         if outcome["result"] == "allocated":
             return {"status": "allocated", "request_id": request_id,
                     "allocation_id": outcome["allocation_id"],
                     "hospital": cand, "doctor": outcome["doctor"], "ambulance": outcome["ambulance"],
+                    "bankers": outcome["bankers"],
                     "fallbacks": len(attempts) - 1, "attempts": attempts}
         if outcome["result"] in ("not_pending", "not_found"):
             return {"status": outcome["result"], "request_id": request_id, "attempts": attempts,
                     "message": "Request was handled by another dispatcher"}
-        # no_unit (stale ranking), no_ambulance or lock_error -> log it and try the next hospital
+        # no_unit (stale ranking), no_ambulance, unsafe or lock_error -> log it, try the next hospital
+        if outcome["result"] == "unsafe":
+            event, why = "BANKERS_UNSAFE", f"Banker's check {outcome['bankers']['summary']}"
+        else:
+            event, why = "ROLLBACK", outcome["result"]
         db.execute("INSERT INTO audit_log (event_type, request_id, hospital_id, details) "
-                   "VALUES ('ROLLBACK', %s, %s, %s)",
-                   (request_id, cand["hospital_id"],
-                    f"Request #{request_id}: {outcome['result']} at {cand.get('name')} "
-                    f"- rolled back, trying next hospital"))
+                   "VALUES (%s, %s, %s, %s)",
+                   (event, request_id, cand["hospital_id"],
+                    f"Request #{request_id}: {why} at {cand.get('name')} "
+                    f"- rolled back, trying next hospital"[:500]))
 
     db.execute("INSERT INTO audit_log (event_type, request_id, details) VALUES ('NO_CAPACITY', %s, %s)",
                (request_id, f"Request #{request_id}: no hospital has a free "
