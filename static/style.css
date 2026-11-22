@@ -288,3 +288,45 @@ td.actions button + button { margin-left: 4px; }
   .userbox { border-left: 0; padding-left: 0; }
   .map { height: 380px; }
 }
+
+/* ---------- Deadlock Lab ---------- */
+.lab-controls { margin: 6px 0 10px; }
+.lab-controls select { max-width: 360px; }
+.whatif { margin: 4px 0 8px; font-size: 13px; }
+.whatif summary { cursor: pointer; color: var(--blue); }
+.whatif .inline { margin-top: 8px; }
+.vec { white-space: nowrap; }
+.vec-item { display: inline-block; margin-right: 8px; font-variant-numeric: tabular-nums; }
+.vec-item i { font-style: normal; color: var(--muted); font-size: 11px; margin-right: 3px; }
+.matrix th.grp { text-align: center; border-left: 2px solid #fff; }
+.matrix td, .matrix th { padding: 6px 8px; }
+.matrix tr.new-proc td { background: var(--blue-soft); }
+.matrix tr.blocked td:first-child { box-shadow: inset 3px 0 0 var(--red); }
+.chips { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.chip { background: #fff; border: 1px solid var(--green); color: var(--green); border-radius: 12px; padding: 1px 9px; font-size: 12px; font-weight: 600; }
+.arrow { color: var(--muted); }
+.dl-grid { display: grid; grid-template-columns: minmax(260px, 360px) 1fr; gap: 18px; margin-top: 6px; }
+.wfg { width: 100%; max-width: 360px; height: auto; display: block; }
+.wfg-node { fill: var(--blue-soft); stroke: var(--blue); stroke-width: 2; }
+.wfg-node.victim { fill: var(--red-soft); stroke: var(--red); stroke-dasharray: 5 3; }
+.wfg-name { text-anchor: middle; font: 700 16px "Segoe UI", system-ui, sans-serif; fill: var(--ink); }
+.wfg-edge { fill: none; stroke: var(--blue); stroke-width: 2.5; }
+.wfg-edge.cyc { stroke: var(--red); }
+.wfg-label { text-anchor: middle; font-size: 11px; fill: var(--muted); }
+.wfg-cycle { text-anchor: middle; font: 700 12px "Segoe UI", system-ui, sans-serif; fill: var(--red); }
+.arr-blue { fill: var(--blue); }
+.arr-red { fill: var(--red); }
+
+/* ---------- Database tab ---------- */
+.obj { padding: 10px 0; border-bottom: 1px solid var(--line); }
+.obj:last-child { border-bottom: 0; }
+.obj-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.obj-head code { font-size: 13px; font-weight: 600; color: var(--blue-dark); }
+.obj details { margin-top: 4px; font-size: 12px; }
+.obj summary { cursor: pointer; color: var(--blue); }
+pre.sql { font: 12px/1.45 var(--mono); background: var(--soft); border: 1px solid var(--line); border-radius: 6px;
+  padding: 10px 12px; overflow-x: auto; margin: 6px 0 0; white-space: pre; }
+
+@media (max-width: 760px) {
+  .dl-grid { grid-template-columns: 1fr; }
+}

@@ -11,7 +11,7 @@ EmergencySOS routes an emergency (SOS) request to the most suitable hospital bas
 
 Hospital names are real Dehradun-region hospitals with approximate locations. **All bed, equipment and doctor data is simulated.**
 
-**Status: Phase III, 100% complete.** Login with roles, a hospital admin panel, road-distance routing with a live map, automatic case completion with live push updates, a mobile SOS portal, load testing, an ER diagram and 62 automated tests are all in place (see section 7).
+**Status: Phase III, 100% complete, plus the Tier 1 additions.** Login with roles, a hospital admin panel, road-distance routing with a live map, automatic case completion with live push updates, a mobile SOS portal, load testing and an ER diagram (Phase III); **ambulances as a second locked resource, Banker's algorithm on every admission, a live deadlock-detection lab, and database views, triggers and stored procedures** (Tier 1). 94 automated tests (see section 7).
 
 ---
 
@@ -19,7 +19,8 @@ Hospital names are real Dehradun-region hospitals with approximate locations. **
 
 ```
 EmergencySOS/
-├── schema.sql              # 7 tables, foreign keys, CHECK constraints, indexes
+├── schema.sql              # 8 tables, foreign keys, CHECK constraints, indexes
+├── schema_objects.sql      # 5 views, 5 triggers, 2 stored procedures (loaded by init_db.py)
 ├── setup_mysql.py          # one-time: creates databases + an app MySQL user (no root needed after)
 ├── init_db.py              # creates the database and loads simulated data
 ├── config.py               # DB login, isolation level, aging interval, ranking weights
@@ -31,7 +32,10 @@ EmergencySOS/
 ├── scheduler.py            # Automatic mode + Priority (aging), FCFS, SJF, MLQ + metrics + Gantt output
 ├── ranking.py              # weighted hospital scoring (road distance/units/specialist/load)
 ├── transaction_manager.py  # locking, commit/rollback, lock ordering, deadlock retry, release, auto-completion
-├── concurrency_lab.py      # race demo (terminal): N clients vs 1 ICU bed, with and without locks
+├── bankers.py              # Banker's algorithm: safety + resource-request check before every admission
+├── deadlock_lab.py         # deadlock demo: wait-for graph, cycle detection (DFS), InnoDB victim, retry
+├── db_objects.py           # serves the views / triggers / procedures to the Database tab
+├── concurrency_lab.py      # race demo: N clients vs 1 ICU bed, no locks / Python locks / stored procedure
 ├── load_test.py            # many concurrent clients + consistency check + isolation-level comparison
 ├── audit_log.py            # prints the latest audit-log events (terminal)
 ├── app.py                  # Flask REST API, login, live-update stream, auto-completion worker
@@ -41,13 +45,14 @@ EmergencySOS/
 │   └── sos.html            # mobile-friendly SOS portal for patients
 ├── static/
 │   ├── style.css, app.js       # console
+│   ├── labs.js                 # console: Deadlock Lab and Database tabs
 │   ├── portal.css, portal.js   # mobile portal
 │   └── vendor/leaflet/         # map library, bundled so it works without a CDN
 ├── docs/
 │   ├── er_diagram.png / .svg   # ER diagram, generated from the live database
 │   └── make_er_diagram.py      # re-draws it: python docs/make_er_diagram.py
 ├── sample_workload.json    # the 12-request workload used in the report
-├── test_core.py            # automated tests (62 tests)
+├── test_core.py            # automated tests (94 tests)
 └── requirements.txt
 ```
 
@@ -100,8 +105,11 @@ The script asks once for an admin login: root, or whoever can create users. With
 - creates the `emergencysos` and `emergencysos_test` databases
 - creates an app user (`sos` by default) with rights on those two databases only
 - saves that login to `db_login.json`, which `config.py` reads automatically
+- allows the app user to create **triggers** (`log_bin_trust_function_creators = 1`). MySQL 8 has binary logging on, and then only an admin may allow this.
 
 The admin password is never saved. After this, skip to 2.4.
+
+> **Already ran setup before the triggers were added?** Run `python setup_mysql.py --triggers-only` once (it only asks for the admin login), then `python init_db.py`. Without it everything still works, but `init_db.py` prints a warning and skips the 5 triggers, and the Database tab shows a red banner.
 
 ### 2.3b Or set the login by hand
 Either edit `config.py` (`DB_PASSWORD = os.environ.get("DB_PASSWORD", "your_password")`) **or** set an environment variable:
@@ -204,7 +212,33 @@ Start with `CASE_TIME_SCALE=0.1` so automatic completion is visible within a min
 13. **Concurrency race (terminal)**: `python concurrency_lab.py`. The unlocked run gives 6 bookings for 1 bed (INCONSISTENT); the locked run gives exactly 1 booking and 5 rollbacks.
 14. **Load test (terminal)**: `python load_test.py`. 20 clients hit the database at once for each isolation level; the table shows throughput, latency, stale-ranking fallbacks and retries, and **CONSISTENT: YES** for every level.
 
+**Tier 1 additions (OS + DBMS depth)**
+
+15. **Ambulances**: the top bar shows *Free amb.*; after a dispatch the result says *Ambulance: sent from the hospital, N left there, back in ~M min*, and the Active allocations table counts the ambulance's way back separately from the case. Set a hospital's ambulances to 0 free (Hospitals tab) and it drops out of the ranking even though it has beds: the bed and the ambulance are taken together or not at all (**no hold-and-wait**).
+16. **Banker's algorithm** (*Deadlock Lab* tab): pick a hospital with active cases and a waiting patient, **Run safety check**. Show the Allocation / Max / Need matrices, the Available vector and the **safe sequence**, step by step. Then open *What if fewer units were free?*, set ICU beds and Ventilators to 0 and run again: **UNSAFE**, the cases that can never finish are marked. Every real dispatch runs the same check (see *Banker's check* in the dispatch result; an unsafe hospital shows as *Banker's: unsafe - rolled back* and the next one is tried).
+17. **Deadlock detection** (*Deadlock Lab*): **Opposite lock order** runs two real MySQL transactions that each hold one row and wait for the other. The wait-for graph turns red (**cycle T1 → T2 → T1**), InnoDB picks a victim (error 1213), the other commits and the victim is retried. **Global lock order** runs the same two transactions in the project's lock order: one just waits, no cycle. Terminal version: `python deadlock_lab.py`.
+18. **Race through a stored procedure** (*Deadlock Lab*): **No locks** gives 6 bookings for 1 bed; **Locked (stored procedure)** books exactly once with the same lock order, written entirely in SQL (`sp_allocate_unit`).
+19. **Database tab**: the 5 views (click **Show rows**; open **SQL** to show the code), **Try an illegal status change** (the trigger refuses `COMPLETED -> PENDING` and the history table shows every legal step), **CALL sp_hospital_report** (one call, two result sets), and the status history of any request (written only by triggers).
+
 ## 5. Key design decisions
+
+**Ambulances** (`transaction_manager.py`, `schema.sql`)
+- A resource type `AMBULANCE` per hospital (its fleet counter). A case takes one unit of its care type **and** one ambulance inside the same transaction; if either is missing it rolls back and the next hospital is tried. Holding one while waiting for the other is impossible, so the *hold and wait* condition for deadlock never occurs.
+- The ambulance comes back after the round trip (2 × drive time × `CASE_TIME_SCALE`), long before the bed; the auto-completion worker frees it (`AMBULANCE_BACK` in the audit log). Releasing a case early returns an ambulance still on the road.
+- Global lock order: request → hospital → care unit → doctor → ambulance → allocation.
+
+**Banker's algorithm** (`bankers.py`)
+- Per hospital: processes = its active cases; resource types = ICU bed, ventilator, OT, general bed, ambulance. Allocation = what a case holds; Max = that plus what the patient may still need if they get worse (e.g. cardiac → ventilator + OT; only types the hospital owns); Need = Max − Allocation.
+- Before every admission the resource-request algorithm pretends to admit the patient and runs the safety algorithm; the patient is admitted only if a safe sequence exists. The hospital row is locked first, so admissions at one hospital are checked one at a time. Switch off with `BANKERS_CHECK=0`.
+- Prevention (lock order, all-or-nothing) and avoidance (Banker's) work together: the first stops row-lock deadlocks between transactions, the second keeps every hospital able to treat all its patients in their worst case.
+
+**Deadlock detection** (`deadlock_lab.py`)
+- The lab deliberately breaks the lock order. Each transaction announces what it holds and waits for; the wait-for graph is rebuilt and searched with DFS for a cycle. InnoDB independently detects the same cycle, rolls back a victim (1213), and the victim is retried (recovery).
+
+**Views, triggers, procedures** (`schema_objects.sql`)
+- Views: `v_hospital_capacity`, `v_doctor_load`, `v_active_cases`, `v_pending_queue` (aging in SQL, same rule as the scheduler), `v_hospital_performance`.
+- Triggers: `trg_request_state_guard` (process state machine: only PENDING→ALLOCATED→COMPLETED and PENDING→CANCELLED; anything else is refused with SIGNAL), `trg_request_history_insert` / `_update` (fill `request_status_history`), `trg_allocation_same_hospital` (unit, doctor and ambulance must belong to the booked hospital, which a CHECK cannot express), `trg_resource_capacity_alert` (audit row when a unit type runs out or comes back).
+- Procedures: `sp_allocate_unit` (the booking transaction in pure SQL: same lock order, EXIT HANDLER → ROLLBACK + RESIGNAL) and `sp_hospital_report` (two result sets).
 
 **Classifier rules** (`classifier.py`)
 - Base priority = `6 − severity` (severity 5 → P1).
@@ -295,7 +329,12 @@ Who can call it: \* anyone, **P** patient, **D** dispatcher, **A** hospital admi
 | GET | `/api/audit` | D, A | audit log |
 | POST | `/api/demo/seed` | D | add 6 demo requests |
 | POST | `/api/labs/scheduler` | D, A | compare policies |
-| POST | `/api/labs/race` | D, A | `{locked, clients, delay_ms}` run the race |
+| POST | `/api/labs/race` | D, A | `{locked, clients, delay_ms, engine: python\|procedure}` run the race |
+| POST | `/api/labs/deadlock` | D, A | `{ordered}` deadlock detection demo (wait-for graph, victim, retry) |
+| POST | `/api/bankers` | D, A | `{hospital_id, request_id?, available?}` Banker's matrices, safe sequence, verdict (read-only) |
+| GET | `/api/db/objects` | D, A | views, triggers, procedures with their SQL and whether they are installed |
+| GET | `/api/db/view/<name>` · `/api/db/report/<hospital_id>` | D, A | rows of a view · `CALL sp_hospital_report` |
+| GET | `/api/db/history/<request_id>` · POST `/api/db/trigger-demo` | D, A | trigger-written status history · state-machine trigger demo |
 
 ---
 
@@ -313,6 +352,13 @@ Who can call it: \* anyone, **P** patient, **D** dispatcher, **A** hospital admi
 - [x] ER diagram generated from the live schema
 - [x] 62 automated tests: classifier, schedulers, ranking, routing, race, transactions, login/roles, admin rules, auto-completion, live stream, map, load
 
+**Tier 1 (done):**
+- [x] ambulances as a second resource, booked all-or-nothing with the bed, returned after the round trip
+- [x] Banker's algorithm (safety + resource-request) before every admission, with a step-by-step lab and what-if values
+- [x] deadlock detection lab on real MySQL locks: wait-for graph, DFS cycle detection, InnoDB victim, retry; vs the global lock order
+- [x] 5 views, 5 triggers, 2 stored procedures; the race lab can book through the stored procedure; Database tab
+- [x] 32 new tests (94 in total)
+
 ## 8. Troubleshooting
 
 | Problem | Fix |
@@ -327,3 +373,5 @@ Who can call it: \* anyone, **P** patient, **D** dispatcher, **A** hospital admi
 | Map is grey | Map tiles come from OpenStreetMap and need internet. Markers and routes still show. |
 | Logged out after **Reset simulated data** | Expected: the reset recreates the user accounts. Log in again. |
 | "My location" does nothing on a phone | Browsers only give GPS over https or localhost. Tap the map instead. |
+| `WARNING: 5 database triggers were skipped` / red banner on the Database tab | MySQL binary logging is on and the app user may not create triggers yet. Run `python setup_mysql.py --triggers-only` once, then `python init_db.py`. |
+| ER diagram picture has no `request_status_history` | `docs/er_diagram.dot` is up to date; render it with Graphviz: `python docs/make_er_diagram.py`. |

@@ -866,6 +866,11 @@ def bankers_state():
 # ---------------------------------------------------------------------------
 # Database objects: views, triggers, stored procedures
 # ---------------------------------------------------------------------------
+def _cols(rows):
+    """Column order as SQL returned it (JSON objects get their keys sorted)."""
+    return list(rows[0].keys()) if rows else []
+
+
 @app.get("/api/db/objects")
 @require_role(*STAFF)
 def db_catalog():
@@ -875,13 +880,15 @@ def db_catalog():
 @app.get("/api/db/view/<name>")
 @require_role(*STAFF)
 def db_view(name):
-    return jsonify({"ok": True, "view": name, "rows": db_objects.view_rows(name)})
+    rows = db_objects.view_rows(name)
+    return jsonify({"ok": True, "view": name, "rows": rows, "columns": _cols(rows)})
 
 
 @app.get("/api/db/report/<int:hospital_id>")
 @require_role(*STAFF)
 def db_report(hospital_id):
-    return jsonify({"ok": True, **db_objects.hospital_report(hospital_id)})
+    r = db_objects.hospital_report(hospital_id)
+    return jsonify({"ok": True, **r, "units_columns": _cols(r["units"]), "doctors_columns": _cols(r["doctors"])})
 
 
 @app.get("/api/db/history/<int:request_id>")
@@ -891,7 +898,8 @@ def db_history(request_id):
                        "WHERE request_id = %s AND is_lab = 0", (request_id,))
     if not req:
         raise ApiError("Request not found", 404)
-    return jsonify({"ok": True, "request": req, "history": db_objects.status_history(request_id),
+    history = db_objects.status_history(request_id)
+    return jsonify({"ok": True, "request": req, "history": history, "columns": _cols(history),
                     "triggers_installed": db_objects.triggers_installed()})
 
 
@@ -900,7 +908,8 @@ def db_history(request_id):
 def db_trigger_demo():
     if not db_objects.triggers_installed():
         raise ApiError(f"Triggers are not installed. {init_db.TRIGGER_HELP}", 409)
-    return jsonify({"ok": True, **db_objects.trigger_demo()})
+    r = db_objects.trigger_demo()
+    return jsonify({"ok": True, **r, "history_columns": _cols(r["history"])})
 
 
 if __name__ == "__main__":

@@ -32,6 +32,8 @@
   <button class="tab" data-tab="map">Map</button>
   <button class="tab" data-tab="hospitals">Hospitals &amp; Admin</button>
   <button class="tab" data-tab="schedlab">Scheduler Lab</button>
+  <button class="tab" data-tab="oslab">Deadlock Lab</button>
+  <button class="tab" data-tab="database">Database</button>
   <button class="tab" data-tab="audit">Audit log</button>
   <button class="tab only-sysadmin" data-tab="users">Users</button>
 </nav>
@@ -207,6 +209,100 @@
     </div>
     <div id="schedResults"></div>
   </section>
+
+  <!-- ============ DEADLOCK LAB (OS) ============ -->
+  <section class="panel" id="tab-oslab">
+    <div class="card">
+      <div class="card-head">
+        <h2>Banker's algorithm <span class="muted small">deadlock avoidance</span></h2>
+        <span id="bankersMode"></span>
+      </div>
+      <p class="muted">Each hospital is a system. Its active cases are the <b>processes</b>; ICU beds, ventilators,
+        operation theatres, general beds and ambulances are the <b>resource types</b>. A case holds one unit of its
+        type plus the ambulance while it is on the road, and may still need more if the patient gets worse
+        (its <b>Max</b> claim). Before every admission the dispatcher runs the safety algorithm and admits the patient
+        only if a <b>safe sequence</b> still exists.</p>
+      <div class="inline lab-controls">
+        <label class="inline-label">Hospital <select id="bkHospital"></select></label>
+        <label class="inline-label">Admit <select id="bkRequest"></select></label>
+        <button class="primary" id="bkRun">Run safety check</button>
+      </div>
+      <details class="whatif">
+        <summary>What if fewer units were free? <span class="muted small">(pretend only, nothing changes in the database)</span></summary>
+        <div class="inline" id="bkOverride"></div>
+      </details>
+      <div id="bkResult"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>Deadlock detection <span class="muted small">wait-for graph on real MySQL locks</span></h2>
+        <div class="inline">
+          <button class="danger" id="dlBad">Opposite lock order</button>
+          <button class="primary" id="dlGood">Global lock order</button>
+        </div>
+      </div>
+      <p class="muted">Two transactions both need row <b>A</b> (the lab hospital's ICU-bed counter) and row <b>B</b> (its
+        ambulance counter), the same two rows a real booking locks. In <b>opposite order</b> each one holds one row and
+        waits for the other: a cycle in the wait-for graph. Our detector finds it with depth-first search, InnoDB rolls
+        back a victim, and the victim is retried. With the project's <b>global lock order</b> one simply waits.</p>
+      <div id="dlResult"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>Race condition <span class="muted small">mutual exclusion: 6 patients, 1 ICU bed</span></h2>
+        <div class="inline">
+          <button class="danger" data-race="unlocked">No locks</button>
+          <button class="primary" data-race="python">Locked (Python transaction)</button>
+          <button class="primary" data-race="procedure">Locked (stored procedure)</button>
+        </div>
+      </div>
+      <p class="muted">All clients start at the same instant and try to book the lab hospital's last ICU bed.
+        Without locks every client reads "1 free" and books it (lost update). With <code>SELECT ... FOR UPDATE</code>,
+        written in Python or as the stored procedure <code>sp_allocate_unit</code>, exactly one wins and the rest roll back.</p>
+      <div id="raceResult"></div>
+    </div>
+  </section>
+
+  <!-- ============ DATABASE (DBMS) ============ -->
+  <section class="panel" id="tab-database">
+    <div id="dbBanner"></div>
+    <div class="card">
+      <h2>Views <span class="muted small">stored queries</span></h2>
+      <div id="dbViews"></div>
+      <div id="dbViewRows"></div>
+    </div>
+    <div class="card">
+      <div class="card-head">
+        <h2>Triggers <span class="muted small">rules the database enforces by itself</span></h2>
+        <button class="primary" id="trgDemo">Try an illegal status change</button>
+      </div>
+      <div id="trgDemoResult"></div>
+      <div id="dbTriggers"></div>
+    </div>
+    <div class="card">
+      <div class="card-head">
+        <h2>Stored procedures</h2>
+        <div class="inline">
+          <label class="inline-label">Hospital <select id="spHospital"></select></label>
+          <button class="primary" id="spRun">CALL sp_hospital_report</button>
+        </div>
+      </div>
+      <div id="spResult"></div>
+      <div id="dbProcedures"></div>
+    </div>
+    <div class="card">
+      <div class="card-head">
+        <h2>Request status history <span class="muted small">written only by triggers</span></h2>
+        <form class="inline" id="histForm">
+          <label class="inline-label">Request # <input type="number" min="1" id="histId" class="narrow" required></label>
+          <button class="primary">Show</button>
+        </form>
+      </div>
+      <div id="histResult"><p class="empty">Enter a request number from the Queue &amp; Patients tab.</p></div>
+    </div>
+  </section>
 </main>
 
 <dialog id="editDialog" class="dialog">
@@ -224,5 +320,6 @@
 <div id="toast" class="toast" role="status"></div>
 <script src="{{ url_for('static', filename='vendor/leaflet/leaflet.js') }}"></script>
 <script src="{{ url_for('static', filename='app.js') }}"></script>
+<script src="{{ url_for('static', filename='labs.js') }}"></script>
 </body>
 </html>

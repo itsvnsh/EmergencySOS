@@ -208,6 +208,7 @@ function renderStatus(s) {
     <dt>Emergency</dt><dd>${nice(r.emergency_type)}, severity ${r.severity}</dd>
     <dt>Needs</dt><dd>${nice(r.required_resource)} + ${nice(r.required_specialist)}</dd>
     ${a?.doctor_name ? `<dt>Doctor</dt><dd>${esc(a.doctor_name)} (${nice(a.specialization)})</dd>` : ""}
+    ${a?.ambulance_resource_id ? `<dt>Ambulance</dt><dd>${a.ambulance_returned_at || a.status !== "ACTIVE" ? "Patient delivered" : "On the way from the hospital"}</dd>` : ""}
     <dt>Sent at</dt><dd>${esc(String(r.created_at).slice(11, 16))}</dd></dl>
     <p class="hint">Keep this page open, or save this link to come back: request #${r.request_id}.</p>`;
 

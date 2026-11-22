@@ -5,7 +5,9 @@ const state = { meta: null, tab: null, hospitals: [], user: null, sysadmin: fals
 const $ = (sel) => document.querySelector(sel);
 const SEVERITY_WORDS = { 1: "mild", 2: "low", 3: "moderate", 4: "serious", 5: "critical" };
 const PRIORITY_COLORS = { 1: "var(--p1)", 2: "var(--p2)", 3: "var(--p3)", 4: "var(--p4)", 5: "var(--p5)" };
-const RESOURCE_NAMES = { ICU_BED: "ICU beds", VENTILATOR: "Ventilators", OPERATION_THEATRE: "Operation theatres", GENERAL_BED: "General beds" };
+const RESOURCE_NAMES = { ICU_BED: "ICU beds", VENTILATOR: "Ventilators", OPERATION_THEATRE: "Operation theatres", GENERAL_BED: "General beds", AMBULANCE: "Ambulances" };
+const ATTEMPT_TEXT = { no_unit: "unit gone - rolled back", no_ambulance: "no ambulance free - rolled back",
+  unsafe: "Banker's: unsafe - rolled back", lock_error: "lock error - rolled back" };
 
 // ---------- helpers ----------
 function esc(v) {
@@ -173,8 +175,9 @@ function renderDispatch(res) {
   const r = res.request;
   const attempts = (res.attempts || []).map((a) => {
     const tag = a.result === "allocated" ? `<span class="tag ok">committed</span>`
-      : `<span class="tag bad">${a.result === "no_unit" ? "unit gone - rolled back" : esc(a.result)}</span>`;
-    return `<li>#${a.rank ?? "-"} ${esc(a.hospital)} ${tag}</li>`;
+      : `<span class="tag bad">${esc(ATTEMPT_TEXT[a.result] || a.result)}</span>`;
+    const why = a.result === "unsafe" && a.bankers ? `<div class="muted small">${esc(a.bankers.summary)}</div>` : "";
+    return `<li>#${a.rank ?? "-"} ${esc(a.hospital)} ${tag}${why}</li>`;
   }).join("");
   const rankRows = (res.ranked || []).map((h) => `
     <tr class="${res.hospital && h.hospital_id === res.hospital.hospital_id ? "best" : ""}">
@@ -196,6 +199,8 @@ function renderDispatch(res) {
         <dt>Unit</dt><dd>${nice(r.required_resource)}</dd>
         ${ok ? `<dt>Hospital phone</dt><dd>${phoneLine(res.hospital.phone) || '<span class="muted">-</span>'}</dd>
         <dt>Doctor</dt><dd>${res.doctor ? `${esc(res.doctor.name)} (${nice(res.doctor.specialization)})` : "none free - unit only"}</dd>
+        ${res.ambulance ? `<dt>Ambulance</dt><dd>sent from the hospital &middot; ${res.ambulance.left} left there &middot; back in ~${Math.round(res.ambulance.back_in_sec / 60)} min</dd>` : ""}
+        ${res.bankers ? `<dt>Banker's check</dt><dd><span class="tag ok">safe</span> <span class="muted small">safe sequence: ${res.bankers.sequence.map(esc).join(" &rarr; ")}</span></dd>` : ""}
         <dt>Distance</dt><dd>${res.hospital.distance_km} km by road &middot; ~${res.hospital.travel_min} min ${srcTag(res.hospital.distance_source)} &middot; score ${res.hospital.score}</dd>
         <dt>Fallbacks</dt><dd>${res.fallbacks}</dd>` : ""}
         <dt>Nearest hospital</dt><dd>${esc(res.nearest?.name)} (${res.nearest?.distance_km} km) ${phoneLine(res.nearest?.phone)}</dd>
@@ -207,6 +212,11 @@ function renderDispatch(res) {
 }
 
 // ---------- allocations ----------
+function ambulanceCell(a) {
+  if (!a.ambulance_resource_id) return '<span class="muted">-</span>';
+  if (a.ambulance_returned_at) return '<span class="tag">back at base</span>';
+  return `<span class="tag warn">on the road</span><div class="muted small" data-amb="${esc(a.ambulance_due_at || "")}">back ${endsIn(a.ambulance_due_at)}</div>`;
+}
 async function loadAllocations() {
   const { allocations, server_time } = await api("/api/allocations?status=ACTIVE");
   if (server_time) state.clockSkew = new Date(server_time.replace(" ", "T")) - Date.now();
@@ -215,9 +225,10 @@ async function loadAllocations() {
     <td>${esc(a.hospital_name)}${a.hospital_phone ? `<br>${phoneLine(a.hospital_phone)}` : ""}</td><td>${nice(a.required_resource)}</td>
     <td>${a.doctor_name ? esc(a.doctor_name) : '<span class="muted">-</span>'}</td>
     <td class="num">${a.distance_km ?? ""}${a.travel_min != null ? `<div class="muted small">${a.travel_min} min ${srcTag(a.distance_source)}</div>` : ""}</td>
+    <td>${ambulanceCell(a)}</td>
     <td>${fmtTime(a.allocated_at)}</td><td data-ends="${esc(a.expected_end_at || "")}">${endsIn(a.expected_end_at)}</td>
     <td>${isDispatcher() ? `<button class="ghost small" data-release="${a.allocation_id}">Release</button>` : ""}</td></tr>`);
-  $("#allocTable").innerHTML = table(["ID", "Patient", "Type", "Hospital", "Unit", "Doctor", { label: "Road km", num: 1 }, "Since", "Auto-completes", ""],
+  $("#allocTable").innerHTML = table(["ID", "Patient", "Type", "Hospital", "Unit", "Doctor", { label: "Road km", num: 1 }, "Ambulance", "Since", "Auto-completes", ""],
     rows, "No active allocations. Send an SOS and dispatch it.");
 }
 $("#allocTable").addEventListener("click", (e) => {
@@ -312,7 +323,7 @@ async function loadHospitals() {
     const res = h.resources.map((r) => {
       const used = r.total_units ? Math.round(100 * (r.total_units - r.available_units) / r.total_units) : 0;
       return `<div class="res-row ${edit ? "" : "ro"}">
-        <div>${RESOURCE_NAMES[r.resource_type]}<div class="meter"><i class="${meterClass(used)}" style="width:${used}%"></i></div></div>
+        <div>${RESOURCE_NAMES[r.resource_type] || nice(r.resource_type)}<div class="meter"><i class="${meterClass(used)}" style="width:${used}%"></i></div></div>
         ${edit ? `<div class="edit">
           <input type="number" min="0" value="${r.available_units}" data-free title="Free units" aria-label="Free units"> /
           <input type="number" min="0" value="${r.total_units}" data-total title="Total units" aria-label="Total units">
@@ -514,6 +525,7 @@ async function refreshStats() {
     const free = (type) => hospitals.reduce((s, h) => s + (h.resources.find((r) => r.resource_type === type)?.available_units || 0), 0);
     $("#topStats").innerHTML = [
       ["Pending", queue.length], ["Active", allocations.length], ["Free ICU", free("ICU_BED")], ["Free vent.", free("VENTILATOR")],
+      ["Free amb.", free("AMBULANCE")],
     ].map(([k, v]) => `<div class="stat"><b>${v}</b><span>${k}</span></div>`).join("");
   } catch (e) {
     $("#topStats").innerHTML = `<span class="tag bad">${esc(e.message)}</span>`;
@@ -524,6 +536,7 @@ function refreshActive() {
   const loaders = {
     dispatch: [loadAllocations], queue: [loadQueue, loadRecent], hospitals: [loadHospitals],
     schedlab: [loadWorkload], map: [loadMap], audit: [loadAudit], users: [loadUsers],
+    oslab: [loadOsLab], database: [loadDatabase],
   }[state.tab] || [];
   loaders.forEach((fn) => fn().catch((e) => toast(e.message, true)));
 }
@@ -568,6 +581,7 @@ setInterval(() => {
 }, 1000);
 function loadAllocationsClock() {
   document.querySelectorAll("#allocTable [data-ends]").forEach((el) => (el.innerHTML = endsIn(el.dataset.ends)));
+  document.querySelectorAll("#allocTable [data-amb]").forEach((el) => (el.innerHTML = "back " + endsIn(el.dataset.amb)));
 }
 
 loadMe()
@@ -649,7 +663,7 @@ async function loadMap() {
   data.hospitals.forEach((h) => {
     const icon = L.divIcon({ className: "", html: `<div class="hosp-pin ${h.free_icu > 0 ? "" : "full"}">${h.free_icu}</div>`, iconSize: [28, 28], iconAnchor: [14, 14] });
     L.marker([h.latitude, h.longitude], { icon, title: h.name }).addTo(layer)
-      .bindPopup(`<b>${esc(h.name)}</b><br>${esc(h.area)}<br>Free ICU: ${h.free_icu} &middot; Ventilators: ${h.free_vent}
+      .bindPopup(`<b>${esc(h.name)}</b><br>${esc(h.area)}<br>Free ICU: ${h.free_icu} &middot; Ventilators: ${h.free_vent} &middot; Ambulances: ${h.free_amb}
         <br>All units: ${h.free_units}/${h.total_units}${h.phone ? `<br>&#9742; ${esc(h.phone)}` : ""}`);
     bounds.push([h.latitude, h.longitude]);
   });
@@ -667,7 +681,8 @@ async function loadMap() {
 }
 
 // ---------- audit log ----------
-const EVENT_CLASS = { ALLOCATED: "ok", RELEASED: "", AUTO_COMPLETED: "ok", ROLLBACK: "bad", NO_CAPACITY: "bad", CANCELLED: "bad", LOGIN: "info" };
+const EVENT_CLASS = { ALLOCATED: "ok", RELEASED: "", AUTO_COMPLETED: "ok", ROLLBACK: "bad", NO_CAPACITY: "bad", CANCELLED: "bad", LOGIN: "info",
+  AMBULANCE_BACK: "", BANKERS_UNSAFE: "bad", CAPACITY_ALERT: "bad", CAPACITY_RESTORED: "ok", LAB_DEADLOCK: "warn", LAB_RACE: "warn" };
 async function loadAudit() {
   const { log } = await api("/api/audit?limit=150");
   const rows = log.map((l) => `<tr><td>${esc(String(l.created_at).slice(0, 19))}</td>

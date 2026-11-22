@@ -16,11 +16,12 @@ import config  # noqa: E402
 import db      # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ORDER = ["hospitals", "resources", "doctors", "users", "sos_requests", "allocations", "audit_log"]
+ORDER = ["hospitals", "resources", "doctors", "users", "sos_requests", "allocations", "audit_log",
+         "request_status_history"]
 NOTE = {
     "hospitals": "hospital", "resources": "shared resource (OS)", "doctors": "specialist",
     "users": "login + role", "sos_requests": "process (OS)", "allocations": "booking (ACID tx)",
-    "audit_log": "event history",
+    "audit_log": "event history", "request_status_history": "written by triggers",
 }
 
 
