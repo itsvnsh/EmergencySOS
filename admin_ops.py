@@ -316,7 +316,7 @@ def list_users():
 def create_user(d):
     role = str(d.get("role") or "").upper()
     hid = d.get("hospital_id") or None
-    conn = db.get_connection()
+    conn = db.pooled()
     try:
         with conn.cursor() as cur:
             if hid is not None:
@@ -346,7 +346,7 @@ def create_user(d):
 def set_user_active(uid, active, acting_user_id):
     if int(uid) == int(acting_user_id) and not active:
         raise TxError("You cannot disable your own account")
-    conn = db.get_connection()
+    conn = db.pooled()
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT username FROM users WHERE user_id = %s FOR UPDATE", (uid,))

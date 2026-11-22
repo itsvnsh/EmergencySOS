@@ -93,7 +93,7 @@ def trigger_demo():
     illegal COMPLETED -> PENDING. The trigger refuses it; the history shows every legal step."""
     if not triggers_installed():
         raise RuntimeError(init_db.TRIGGER_HELP)
-    conn = db.get_connection(autocommit=True)
+    conn = db.pooled(autocommit=True)
     steps = []
     try:
         with conn.cursor() as cur:
@@ -120,7 +120,7 @@ def trigger_demo():
 
 def hospital_report(hospital_id):
     """CALL sp_hospital_report: a procedure can return more than one result set."""
-    conn = db.get_connection(autocommit=True)
+    conn = db.pooled(autocommit=True)
     try:
         with conn.cursor() as cur:
             cur.execute("CALL sp_hospital_report(%s)", (int(hospital_id),))

@@ -536,7 +536,7 @@ function refreshActive() {
   const loaders = {
     dispatch: [loadAllocations], queue: [loadQueue, loadRecent], hospitals: [loadHospitals],
     schedlab: [loadWorkload], map: [loadMap], audit: [loadAudit], users: [loadUsers],
-    oslab: [loadOsLab], database: [loadDatabase],
+    oslab: [loadOsLab], database: [loadDatabase], dashboard: [loadDashboard],
   }[state.tab] || [];
   loaders.forEach((fn) => fn().catch((e) => toast(e.message, true)));
 }
@@ -551,6 +551,7 @@ function refreshLive() {
   if (state.tab === "dispatch") loadAllocations().catch(() => {});
   if (state.tab === "map") loadMap().catch(() => {});
   if (state.tab === "audit") loadAudit().catch(() => {});
+  if (state.tab === "dashboard") loadDashboard().catch(() => {});
   // skip the hospital grid while an admin is typing into it or a dialog is open
   if (state.tab === "hospitals" && !document.activeElement.closest?.("#hospitalGrid") && !$("#editDialog").open)
     loadHospitals().catch(() => {});

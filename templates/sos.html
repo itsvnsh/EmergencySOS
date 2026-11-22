@@ -11,28 +11,31 @@
 <body>
 <header class="bar">
   <div class="logo"><span class="cross" aria-hidden="true"></span><b>EmergencySOS</b></div>
-  <div class="who" id="who"><a href="/login">Log in</a></div>
+  <div class="bar-right">
+    <button type="button" class="lang" id="langBtn" lang="hi" aria-label="Language / भाषा">हिन्दी</button>
+    <div class="who" id="who"><a href="/login">Log in</a></div>
+  </div>
 </header>
 
 <main>
   <!-- ========== STEP 1: SEND ========== -->
   <section id="sendView">
-    <p class="call-note">Life in danger right now? Also call <a href="tel:112"><b>112</b></a> (ambulance 108).</p>
+    <p class="call-note" data-i18n-html="callNote">Life in danger right now? Also call <a href="tel:112"><b>112</b></a> (ambulance 108).</p>
 
     <form id="sosForm" novalidate>
       <fieldset>
-        <legend>1. What happened?</legend>
+        <legend data-i18n="step1">1. What happened?</legend>
         <div class="types" id="types" role="radiogroup" aria-label="Emergency type"></div>
       </fieldset>
 
       <fieldset>
-        <legend>2. How serious is it?</legend>
+        <legend data-i18n="step2">2. How serious is it?</legend>
         <div class="sev" id="sev" role="radiogroup" aria-label="Severity"></div>
       </fieldset>
 
       <fieldset>
-        <legend>3. Where is the patient?</legend>
-        <button type="button" class="btn outline wide" id="geoBtn">&#9737; Use my current location</button>
+        <legend data-i18n="step3">3. Where is the patient?</legend>
+        <button type="button" class="btn outline wide" id="geoBtn" data-i18n="geo">&#9737; Use my current location</button>
         <select id="preset" aria-label="Or choose a place"></select>
         <div id="pickMap" class="pick-map" aria-label="Tap the map to set the location"></div>
         <p class="hint" id="locText">Tap the map to move the pin.</p>
@@ -41,18 +44,18 @@
       </fieldset>
 
       <fieldset>
-        <legend>4. Patient</legend>
-        <label>Patient name <input name="patient_name" id="pname" maxlength="80" autocomplete="name" required></label>
-        <label>Phone to call back <input name="phone" id="pphone" type="tel" maxlength="20" autocomplete="tel"></label>
-        <label>What happened? (optional) <input name="description" maxlength="255"></label>
+        <legend data-i18n="step4">4. Patient</legend>
+        <label><span data-i18n="name">Patient name</span> <input name="patient_name" id="pname" maxlength="80" autocomplete="name" required></label>
+        <label><span data-i18n="phone">Phone to call back</span> <input name="phone" id="pphone" type="tel" maxlength="20" autocomplete="tel"></label>
+        <label><span data-i18n="desc">What happened? (optional)</span> <input name="description" maxlength="255"></label>
       </fieldset>
 
       <p class="error" id="formError" role="alert"></p>
-      <button type="submit" class="btn sos" id="sendBtn">SEND SOS</button>
+      <button type="submit" class="btn sos" id="sendBtn" data-i18n="send">SEND SOS</button>
     </form>
 
     <section id="myRequests" class="card hidden">
-      <h2>My requests</h2>
+      <h2 data-i18n="mine">My requests</h2>
       <div id="myList"></div>
     </section>
   </section>
@@ -60,14 +63,19 @@
   <!-- ========== STEP 2: TRACK ========== -->
   <section id="trackView" class="hidden" aria-live="polite">
     <div class="card status" id="statusCard"></div>
+    <div class="alert-bar" id="alertBar">
+      <button type="button" class="alert-toggle" id="alertBtn" aria-pressed="true"></button>
+      <button type="button" class="alert-test" id="testAlertBtn" data-i18n="testAlert">Test</button>
+    </div>
     <div id="trackMap" class="track-map hidden"></div>
     <div class="card" id="detailCard"></div>
-    <button class="btn outline wide" id="newBtn">Send another SOS</button>
+    <button class="btn outline wide" id="newBtn" data-i18n="another">Send another SOS</button>
   </section>
 </main>
 
 <div id="toast" class="toast" role="status"></div>
 <script src="{{ url_for('static', filename='vendor/leaflet/leaflet.js') }}"></script>
+<script src="{{ url_for('static', filename='portal_i18n.js') }}"></script>
 <script src="{{ url_for('static', filename='portal.js') }}"></script>
 </body>
 </html>

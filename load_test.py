@@ -19,6 +19,7 @@ It also compares isolation levels (the tuning part):
     python load_test.py                       # 20 clients x 15 ops, all isolation levels
     python load_test.py --clients 50 --ops 20
     python load_test.py --isolation "REPEATABLE READ"
+    python load_test.py --compare-pool                # connection pool off vs on (Tier 2)
     python load_test.py --http http://127.0.0.1:5000 --clients 20   # through the running web app
 
 It uses the TEST database (<DB_NAME>_test) and reloads it, so demo data is safe.
@@ -130,10 +131,14 @@ def _client(cid, ops, release_prob, barrier, stats, lock):
         stats.append(local)
 
 
-def run_direct(clients=20, ops=15, isolation=None, release_prob=0.4, lock_timeout=None, quiet=False):
+def run_direct(clients=20, ops=15, isolation=None, release_prob=0.4, lock_timeout=None, quiet=False,
+               pool=None):
     old_iso, old_to = config.ISOLATION_LEVEL, config.LOCK_WAIT_TIMEOUT_SEC
+    old_pool = db.pool_enabled()
     config.ISOLATION_LEVEL = isolation or old_iso
     config.LOCK_WAIT_TIMEOUT_SEC = lock_timeout or old_to
+    if pool is not None:
+        db.set_pool_enabled(pool)
     try:
         init_db.initialise()
         start_used, _ = _snapshot()
@@ -148,8 +153,11 @@ def run_direct(clients=20, ops=15, isolation=None, release_prob=0.4, lock_timeou
             t.join()
         elapsed = time.perf_counter() - t0
         ok, problems = check_consistency(start_used)
+        pool_stats = db.pool_stats()
     finally:
         config.ISOLATION_LEVEL, config.LOCK_WAIT_TIMEOUT_SEC = old_iso, old_to
+        if pool is not None:
+            db.set_pool_enabled(old_pool)
 
     lat = [x for s in stats for x in s["lat"]]
     outcomes = {}
@@ -170,6 +178,7 @@ def run_direct(clients=20, ops=15, isolation=None, release_prob=0.4, lock_timeou
         "errors": [e for s in stats for e in s["errors"]][:10],
         "error_count": sum(len(s["errors"]) for s in stats),
         "consistent": ok, "problems": problems[:10],
+        "pool": pool_stats,
     }
     if not quiet:
         print_result(result)
@@ -242,6 +251,12 @@ def print_result(r):
     l = r["latency_ms"]
     print(f"  latency ms: avg {l['avg']}  p50 {l['p50']}  p95 {l['p95']}  max {l['max']}")
     print(f"  outcomes: {r['outcomes']}")
+    p = r.get("pool")
+    if p:
+        print("  connection pool: " + (f"on, size {p['size']}: {p['created']} connections opened, "
+                                       f"{p['reused']} reuses ({p['reuse_pct']}%), {p['waited']} waits "
+                                       f"({p['wait_ms']} ms), peak {p['peak_in_use']} in use"
+                                       if p["enabled"] else "off (a new connection for every query)"))
     if "consistent" in r:
         print(f"  stale-ranking fallbacks: {r['fallbacks_stale_ranking']}   "
               f"deadlock/timeout retries: {r['deadlock_or_timeout_retries']}   releases: {r['releases']}")
@@ -270,11 +285,33 @@ def compare_isolation(clients=20, ops=15):
     return rows
 
 
+def compare_pool(clients=20, ops=15):
+    """Same workload with the connection pool off, then on (Tier 2 before/after numbers)."""
+    off = run_direct(clients, ops, quiet=True, pool=False)
+    on = run_direct(clients, ops, quiet=True, pool=True)
+    print(f"\n=== Connection pool: {clients} clients x {ops} SOS each, {config.ISOLATION_LEVEL} ===")
+    print(f"{'Pool':22} {'ops/s':>7} {'avg ms':>8} {'p95 ms':>8} {'connections':>11} {'errors':>7}  consistent")
+    p = on["pool"]
+    opened_off = "1 per query"
+    for name, r, opened in (("off (connect per query)", off, opened_off),
+                            (f"on (size {p['size']})", on, str(p["created"]))):
+        print(f"{name:22} {r['throughput_ops_s']:>7} {r['latency_ms']['avg']:>8} {r['latency_ms']['p95']:>8} "
+              f"{opened:>11} {r['error_count']:>7}  {'YES' if r['consistent'] else 'NO'}")
+    if off["throughput_ops_s"]:
+        print(f"\nThroughput x{on['throughput_ops_s'] / off['throughput_ops_s']:.1f}, "
+              f"average latency {off['latency_ms']['avg']} -> {on['latency_ms']['avg']} ms.")
+    print(f"Pool: {p['borrowed']} borrows served by {p['created']} connections ({p['reuse_pct']}% reused); "
+          f"{p['waited']} times a client waited on the semaphore (all {p['size']} out), "
+          f"{p['wait_ms']} ms in total; {p['nested']} nested borrows given a fresh connection.")
+    return off, on
+
+
 def main():
     ap = argparse.ArgumentParser(description="EmergencySOS load test")
     ap.add_argument("--clients", type=int, default=20)
     ap.add_argument("--ops", type=int, default=15, help="SOS requests per client")
     ap.add_argument("--isolation", choices=ISOLATION_LEVELS, help="test only this isolation level")
+    ap.add_argument("--compare-pool", action="store_true", help="connection pool off vs on")
     ap.add_argument("--http", metavar="URL", help="go through the running web app, e.g. http://127.0.0.1:5000")
     ap.add_argument("--check-only", action="store_true", help="only run the consistency check")
     ap.add_argument("--keep-db-name", action="store_true", help="use DB_NAME as is (not the _test database)")
@@ -289,6 +326,8 @@ def main():
         return
     if a.http:
         run_http(a.http.rstrip("/"), a.clients, a.ops)
+    elif a.compare_pool:
+        compare_pool(a.clients, a.ops)
     elif a.isolation:
         run_direct(a.clients, a.ops, isolation=a.isolation)
     else:

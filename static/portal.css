@@ -109,3 +109,29 @@ dd { margin: 0; font-weight: 600; }
 .toast.error { background: var(--red); }
 
 @media (min-width: 480px) { .types { grid-template-columns: repeat(4, 1fr); } }
+
+/* Tier 2: language switch + hospital-assigned alert */
+.bar { gap: 10px; }
+.bar-right { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.lang {
+  background: #fff; color: var(--red-dark) !important; border: 0; border-radius: 999px; padding: 6px 12px;
+  font: inherit; font-size: 14px; font-weight: 700; min-height: 34px; cursor: pointer;
+}
+.lang:focus-visible { outline: 3px solid #fff; outline-offset: 2px; }
+html[lang="hi"] body { font-family: "Nirmala UI", "Noto Sans Devanagari", "Mangal", "Segoe UI", system-ui, sans-serif; }
+
+.alert-bar { display: flex; gap: 8px; margin: -4px 0 12px; }
+.alert-toggle, .alert-test {
+  min-height: 44px; border-radius: 10px; font: inherit; font-size: 14px; font-weight: 600; cursor: pointer;
+  border: 1px solid var(--green); background: #fff; color: var(--green);
+}
+.alert-toggle { flex: 1; text-align: left; padding: 8px 12px; }
+.alert-toggle.off { border-color: var(--line); color: var(--muted); }
+.alert-test { padding: 8px 14px; border-color: var(--line); color: var(--ink); }
+
+@keyframes assigned-flash {
+  0%, 50%, 100% { box-shadow: 0 0 0 0 rgba(22, 163, 74, 0); transform: scale(1); }
+  20%, 70% { box-shadow: 0 0 0 10px rgba(22, 163, 74, .35); transform: scale(1.02); }
+}
+.status.flash { animation: assigned-flash 1.6s ease-out 2; }
+@media (prefers-reduced-motion: reduce) { .status.flash { animation: none; outline: 4px solid var(--green); } }

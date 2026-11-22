@@ -62,6 +62,7 @@ import classifier
 import concurrency_lab
 import config
 import db
+import dashboard
 import db_objects
 import deadlock_lab
 import init_db
@@ -211,7 +212,7 @@ def login():
     session.clear()
     session["user_id"] = u["user_id"]
     session.permanent = True
-    conn = db.get_connection()
+    conn = db.pooled()
     try:
         with conn.cursor() as cur:
             db.log_event(cur, "LOGIN", f"{u['username']} logged in ({u['role']})", user_id=u["user_id"])
@@ -276,7 +277,7 @@ def _validate_sos(data):
 def insert_request(name, phone, lat, lon, etype, severity, description, minutes_ago=0, user_id=None):
     c = classifier.classify(etype, severity)
     token = secrets.token_hex(8)              # 16 chars: lets the sender follow this request
-    conn = db.get_connection()
+    conn = db.pooled()
     try:
         with conn.cursor() as cur:
             cur.execute(
@@ -831,6 +832,33 @@ def lab_race():
 @require_role(*STAFF)
 def lab_deadlock():
     return jsonify({"ok": True, **deadlock_lab.run(ordered=bool(body().get("ordered", False)))})
+
+
+# ---------------------------------------------------------------------------
+# Dashboard (Tier 2)
+# ---------------------------------------------------------------------------
+DASHBOARD_MIN_PATIENTS = 5      # fewer real patients than this: compare on the sample workload
+
+
+@app.get("/api/dashboard")
+@require_role(*STAFF)
+def dashboard_data():
+    """KPIs, occupancy, cases per hour, real response times and the scheduling comparison.
+    The scheduling part runs on the patients in the system (?source=real), the sample workload
+    (?source=sample), or by default the real one if it has enough patients to compare."""
+    source = request.args.get("source", "auto")
+    workload = _real_workload() if source in ("auto", "real") else []
+    if source == "sample" or (source == "auto" and len(workload) < DASHBOARD_MIN_PATIENTS):
+        workload, source = _lab_workload("sample"), "sample"
+    else:
+        source = "real"
+    return jsonify({"ok": True, **dashboard.snapshot(workload, source)})
+
+
+@app.get("/api/pool")
+@require_role(*STAFF)
+def pool_status():
+    return jsonify({"ok": True, "pool": db.pool_stats()})
 
 
 # ---------------------------------------------------------------------------

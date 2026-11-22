@@ -33,6 +33,12 @@ ISOLATION_LEVEL = "REPEATABLE READ"   # InnoDB default, stated explicitly
 LOCK_WAIT_TIMEOUT_SEC = 5             # how long a transaction waits for a row lock
 MAX_TX_RETRIES = 3                    # retries on deadlock / lock-wait timeout
 
+# Connection pool (Tier 2, db.py): reuse open MySQL connections instead of
+# connecting for every query. DB_POOL=0 switches it off (the load test compares both).
+DB_POOL = os.environ.get("DB_POOL", "1") == "1"
+DB_POOL_SIZE = int(os.environ.get("DB_POOL_SIZE", "10"))   # connections out at once (semaphore permits)
+DB_POOL_TIMEOUT_SEC = 10                                   # give up waiting for a free connection
+
 # Deadlock avoidance (OS): before admitting a patient, run the Banker's safety
 # algorithm for that hospital (bankers.py). Admit only if the state stays safe.
 BANKERS_CHECK = os.environ.get("BANKERS_CHECK", "1") == "1"

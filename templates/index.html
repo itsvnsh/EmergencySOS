@@ -29,6 +29,7 @@
 <nav class="tabs" role="tablist">
   <button class="tab only-dispatcher" data-tab="dispatch">SOS &amp; Dispatch</button>
   <button class="tab" data-tab="queue">Queue &amp; Patients</button>
+  <button class="tab" data-tab="dashboard">Dashboard</button>
   <button class="tab" data-tab="map">Map</button>
   <button class="tab" data-tab="hospitals">Hospitals &amp; Admin</button>
   <button class="tab" data-tab="schedlab">Scheduler Lab</button>
@@ -189,6 +190,44 @@
   </section>
 
   <!-- ============ SCHEDULER LAB ============ -->
+  <section class="panel" id="tab-dashboard">
+    <div class="kpi-row" id="dbKpis"></div>
+    <div class="grid two">
+      <div class="card">
+        <div class="card-head">
+          <h2>Average wait by scheduling algorithm</h2>
+          <label class="inline-label">Patients
+            <select id="dashSource">
+              <option value="auto">Real patients (sample if fewer than 5)</option>
+              <option value="real">Real patients only</option>
+              <option value="sample">Sample workload (12 requests)</option>
+            </select></label>
+        </div>
+        <div id="dashSched"></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>Bed occupancy by hospital</h2><span class="muted small" id="dashOccTotal"></span></div>
+        <div id="dashOcc"></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>SOS requests per hour</h2><span class="muted small">last 24 hours</span></div>
+        <div id="dashHourly"></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>Real wait by priority</h2><span class="muted small">SOS sent &rarr; unit booked</span></div>
+        <div id="dashResp"></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>Gantt chart: how the dispatcher would order these patients</h2><span class="muted small" id="dashGanttNote"></span></div>
+      <div id="dashGantt"></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>Database connection pool</h2><span class="muted small">a counting semaphore guards the connections</span></div>
+      <div id="dashPool"></div>
+    </div>
+  </section>
+
   <section class="panel" id="tab-schedlab">
     <div class="card">
       <div class="card-head">
@@ -321,5 +360,7 @@
 <script src="{{ url_for('static', filename='vendor/leaflet/leaflet.js') }}"></script>
 <script src="{{ url_for('static', filename='app.js') }}"></script>
 <script src="{{ url_for('static', filename='labs.js') }}"></script>
+<script src="{{ url_for('static', filename='dashboard.js') }}"></script>
+<div class="chart-tip" id="chartTip" role="tooltip"></div>
 </body>
 </html>

@@ -65,7 +65,7 @@ def _with_retry(fn, *args, **kwargs):
     """Run a transaction function, retrying on deadlock / lock-wait timeout."""
     last_error = None
     for attempt in range(1, config.MAX_TX_RETRIES + 1):
-        conn = db.get_connection()
+        conn = db.pooled()
         try:
             result = fn(conn, *args, **kwargs)
             result["tx_attempts"] = attempt
