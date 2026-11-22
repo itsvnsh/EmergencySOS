@@ -1,0 +1,14 @@
+# keep secrets and local files out of the image
+db_login.json
+.secret_key
+.env
+.git
+.gitignore
+venv/
+.venv/
+__pycache__/
+*.pyc
+.vscode/
+.idea/
+.claude/
+docker-compose.yml

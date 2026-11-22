@@ -11,7 +11,7 @@ EmergencySOS routes an emergency (SOS) request to the most suitable hospital bas
 
 Hospital names are real Dehradun-region hospitals with approximate locations. **All bed, equipment and doctor data is simulated.**
 
-**Status: Phase III, 100% complete, plus the Tier 1 and Tier 2 additions.** Login with roles, a hospital admin panel, road-distance routing with a live map, automatic case completion with live push updates, a mobile SOS portal, load testing and an ER diagram (Phase III); **ambulances as a second locked resource, Banker's algorithm on every admission, a live deadlock-detection lab, and database views, triggers and stored procedures** (Tier 1); **a Dashboard tab with charts, a database connection pool (51x the load-test throughput) and a Hindi + alerting SOS portal** (Tier 2). 111 automated tests (see section 7).
+**Status: Phase III, 100% complete, plus the Tier 1, 2 and 3 additions.** Login with roles, a hospital admin panel, road-distance routing with a live map, automatic case completion with live push updates, a mobile SOS portal, load testing and an ER diagram (Phase III); **ambulances as a second locked resource, Banker's algorithm on every admission, a live deadlock-detection lab, and database views, triggers and stored procedures** (Tier 1); **a Dashboard tab with charts, a database connection pool (51x the load-test throughput) and a Hindi + alerting SOS portal** (Tier 2); **an offline map fallback, login rate limiting, CSRF protection and a one-command Docker Compose setup** (Tier 3). 133 automated tests (see section 7).
 
 ---
 
@@ -27,6 +27,7 @@ EmergencySOS/
 ├── db.py                   # connection pool (semaphore) + PyMySQL helpers + audit-log helper + change id
 ├── dashboard.py            # numbers for the Dashboard tab (KPIs, occupancy, cases/hour, waits)
 ├── auth.py                 # login, password hashing, roles, @require_role, per-hospital access
+├── security.py             # login rate limiting (sliding window) + CSRF tokens and origin check
 ├── admin_ops.py            # admin changes: hospitals, doctors, patients, users (all transactional)
 ├── routing.py              # road distance + travel time (OSRM), offline estimate fallback
 ├── classifier.py           # Emergency Classifier: type + severity -> priority, resource, specialist, burst
@@ -50,12 +51,17 @@ EmergencySOS/
 │   ├── dashboard.js            # console: Dashboard tab (charts in plain HTML/CSS, no library)
 │   ├── portal.css, portal.js   # mobile portal
 │   ├── portal_i18n.js          # mobile portal: English / Hindi text
+│   ├── offline_map.js          # map base layer with an offline fallback (console + portal)
+│   ├── sw.js                   # service worker: keeps viewed map tiles for offline use
 │   └── vendor/leaflet/         # map library, bundled so it works without a CDN
 ├── docs/
 │   ├── er_diagram.png / .svg   # ER diagram, generated from the live database
 │   └── make_er_diagram.py      # re-draws it: python docs/make_er_diagram.py
 ├── sample_workload.json    # the 12-request workload used in the report
-├── test_core.py            # automated tests (111 tests)
+├── test_core.py            # automated tests (133 tests)
+├── Dockerfile, docker-compose.yml, .dockerignore   # one-command setup: docker compose up --build
+├── docker/entrypoint.py    # container start: wait for MySQL, create the database on first start, run app
+├── docker/mysql-init/      # SQL run once by the MySQL container (test database grant)
 └── requirements.txt
 ```
 
@@ -81,6 +87,17 @@ SOS form ──► Classifier ──► OS Scheduler ──► Ranking ──►
 ---
 
 ## 2. Setup (do this once)
+
+### 2.0 Quickest: Docker (one command)
+With [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed, in the project folder:
+
+```bash
+docker compose up --build
+```
+
+Then open http://localhost:5000. This starts MySQL 8 and the app in two containers, creates the database with demo data (triggers included) on the first start and keeps it in a volume afterwards. Nothing else to install. `docker compose down -v` starts fresh; `docker compose exec app python -m unittest test_core` runs the tests inside. The passwords in `docker-compose.yml` are demo defaults: put your own in a `.env` file (`DB_PASSWORD=...`, `MYSQL_ROOT_PASSWORD=...`, `SECRET_KEY=...`).
+
+Without Docker, follow 2.1 to 2.5.
 
 ### 2.1 Install the software
 1. **Python 3.10+**: https://www.python.org/downloads/ (on Windows, tick "Add Python to PATH").
@@ -280,6 +297,25 @@ Start with `CASE_TIME_SCALE=0.1` so automatic completion is visible within a min
 - A hospital admin with `hospital_id` set may change only that hospital (checked on every admin call). `hospital_id NULL` means system admin. A CHECK constraint stops non-admins from being tied to a hospital, and the foreign key is `ON DELETE RESTRICT` so deleting a hospital can never silently turn its admin into a system admin.
 - Sending an SOS is open to everyone. Tracking a request needs its random 16-character token, the patient's own login, or a staff login, and a wrong token gets the same "not found" as a missing request.
 
+**Login rate limiting** (`security.py`, Tier 3)
+- Sliding window per (IP, username): 5 failed logins in 5 minutes lock that pair; 20 failures from one IP (any usernames) lock the IP, which stops password spraying. A locked login gets **429** with `Retry-After` and the password is **not even checked**, so guessing learns nothing. The lock ends by itself; a correct login clears the pair's failures. The 3 last tries before a lock are announced, and every lock writes `LOGIN_LOCKED` to the audit log.
+- Anonymous SOS requests: 10 a minute per IP (a script cannot flood the queue; the message says to call 112). Logged-in staff are not limited.
+- The counters are shared by all request threads, so each update is a critical section behind one lock (a test runs 8 threads × 500 hits and loses none).
+
+**CSRF protection** (`security.py`, Tier 3)
+- The login is a cookie, which the browser also sends when another site makes it post to us. So every POST/PUT/PATCH/DELETE under `/api/` must carry the session's secret token in `X-CSRF-Token` (the pages get it in a `<meta>` tag, API clients from `GET /api/csrf`); another site can neither read it nor set that header.
+- A request whose `Origin` is another site (or `null`, or `Sec-Fetch-Site: cross-site`) is refused even with a token. The cookie is also `SameSite=Lax` and `HttpOnly`.
+- Login starts a fresh session (no session fixation) with a new token; the old token stops working. The console and portal fetch a fresh token by themselves if theirs expired.
+
+**Offline map** (`static/offline_map.js`, `static/sw.js`, Tier 3)
+- A service worker keeps every OpenStreetMap tile you have looked at (network first with a 4 s timeout, then the cache; at most 3000 tiles). Run through the demo once on good Wi-Fi and the map keeps working without internet.
+- If street tiles still cannot load (3 errors and none loaded, 7 s without a tile, or the browser is offline with nothing cached), the map switches to a drawn **offline map**: a grid with coordinates and the known places of Dehradun. Hospital and patient markers, routes and distances are drawn as usual; *Try again* (or the connection coming back) restores the street map. Road distances already fall back to an estimate when the routing server is unreachable.
+- Service workers only run on `https` or `localhost`; a phone opening the laptop's LAN address gets the drawn fallback but not the tile cache.
+
+**Docker** (`Dockerfile`, `docker-compose.yml`, Tier 3)
+- `db`: MySQL 8 with `--log-bin-trust-function-creators=1` (so the triggers install), a health check, and a volume for the data. `app`: Python 3.12, runs as a non-root user, starts only when MySQL is healthy, waits for it again anyway, creates the database on the first start only.
+- `.dockerignore` keeps `db_login.json`, `.secret_key` and `.env` out of the image.
+
 **Admin changes** (`admin_ops.py`): each is one transaction that locks the row with `SELECT ... FOR UPDATE`, checks the rule, writes the change and an audit row, then commits. The rules:
 - a doctor with open cases cannot be deleted
 - max cases cannot go below current cases
@@ -336,7 +372,8 @@ Who can call it: \* anyone, **P** patient, **D** dispatcher, **A** hospital admi
 
 | Method | Endpoint | Who | Purpose |
 |---|---|---|---|
-| POST | `/api/login`, `/api/logout` · GET `/api/me` | \* | session login |
+| POST | `/api/login`, `/api/logout` · GET `/api/me` | \* | session login (5 wrong passwords in 5 min: 429 + `Retry-After`) |
+| GET | `/api/csrf` | \* | the session's CSRF token; send it as `X-CSRF-Token` on every POST/PUT/PATCH/DELETE |
 | GET | `/api/meta` | \* | emergency types, policies, preset locations, routing status |
 | POST | `/api/sos` | \* | create + classify an SOS request (returns a tracking token) |
 | GET | `/api/sos/<id>/status?token=` | \* | live status for the portal: queue position, hospital, route |
@@ -401,10 +438,21 @@ Who can call it: \* anyone, **P** patient, **D** dispatcher, **A** hospital admi
 - [x] SOS portal: sound + vibration + notification when a hospital is assigned; English / Hindi switch
 - [x] 17 new tests (111 in total)
 
+**Tier 3 (done):**
+- [x] offline map: service-worker tile cache + drawn fallback map, automatic switch back
+- [x] login rate limiting (per user+IP and per IP, 429 + Retry-After, audit row) and anonymous SOS limit
+- [x] CSRF tokens on every state-changing call + origin check; new session and token on login
+- [x] Docker Compose: MySQL 8 + app, one command, data kept in a volume (written and checked here, but not run on this machine: Docker was not installed)
+- [x] 22 new tests (133 in total)
+
 ## 8. Troubleshooting
 
 | Problem | Fix |
 |---|---|
+| `Too many failed logins` | Wait the minutes shown, or restart `app.py` (the counters live in memory). `RATE_LIMIT=0` switches limits off. |
+| `Security token missing or expired` | Reload the page. A script calling the API must first `GET /api/csrf` and send the token as `X-CSRF-Token`. |
+| Map shows "Offline map" | Street tiles are not reachable. Everything else still works; *Try again* when the internet is back. |
+| `docker compose up` waits on the database | The first MySQL start takes about a minute; the app starts when MySQL is healthy. |
 | `Access denied for user 'root'` | Wrong password. Set `DB_PASSWORD` (section 2.3). |
 | `Can't connect to MySQL server` | The MySQL service is not running. Start it. |
 | `Unknown database 'emergencysos'` | Run `python init_db.py`. |

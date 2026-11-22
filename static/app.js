@@ -27,8 +27,10 @@ function endsIn(t) {
   return `in ${m}:${String(sec).padStart(2, "0")}`;
 }
 
+// CSRF token (Tier 3): sent with every POST/PUT/DELETE; the page has it in a <meta> tag
+state.csrf = document.querySelector('meta[name="csrf-token"]')?.content || "";
 async function api(path, options = {}) {
-  const opts = { headers: { "Content-Type": "application/json" }, ...options };
+  const opts = { headers: { "Content-Type": "application/json", "X-CSRF-Token": state.csrf }, ...options };
   if (opts.body && typeof opts.body !== "string") opts.body = JSON.stringify(opts.body);
   let res, data;
   try {
@@ -38,6 +40,12 @@ async function api(path, options = {}) {
     throw new Error("Server not reachable - is app.py running?");
   }
   if (res.status === 401) { location.href = "/login"; throw new Error("Please log in"); }
+  if (res.status === 403 && data.csrf) {         // token expired (e.g. logged in on another tab): get a fresh one
+    if (!options._retried) {
+      state.csrf = (await (await fetch("/api/csrf")).json()).csrf;
+      return api(path, { ...options, _retried: true });
+    }
+  }
   if (!res.ok || data.ok === false) throw new Error(data.error || `Request failed (${res.status})`);
   return data;
 }
@@ -638,9 +646,7 @@ function ensureMap() {
     return false;
   }
   state.map = L.map("map").setView([30.30, 78.04], 11);
-  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-    maxZoom: 18, attribution: "&copy; OpenStreetMap contributors",
-  }).addTo(state.map);
+  state.baseLayer = sosBaseLayer(state.map, { places: state.meta?.locations || [] });   // street map, offline fallback
   state.mapLayer = L.layerGroup().addTo(state.map);
   state.mapFitted = false;
   return true;

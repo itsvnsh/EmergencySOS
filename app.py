@@ -69,6 +69,7 @@ import init_db
 import ranking
 import routing
 import scheduler
+import security
 import transaction_manager as tm
 from auth import require_role
 
@@ -117,6 +118,20 @@ app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax",
                   PERMANENT_SESSION_LIFETIME=dt.timedelta(hours=12))
 
 STAFF = ("DISPATCHER", "HOSPITAL_ADMIN")
+
+
+@app.before_request
+def csrf_guard():
+    """Tier 3: every state-changing /api/ call needs the session's CSRF token (security.py)."""
+    problem = security.csrf_problem()
+    if problem:
+        return jsonify({"ok": False, "error": problem, "csrf": True}), 403
+    return None
+
+
+@app.context_processor
+def inject_csrf():
+    return {"csrf_token": security.csrf_token}
 
 
 class ApiError(Exception):
@@ -203,13 +218,43 @@ def sos_portal():
     return render_template("sos.html")
 
 
+@app.route("/sw.js")
+def service_worker():
+    """Map-tile cache for the offline fallback (Tier 3). Served from / so it may cover every page."""
+    resp = app.send_static_file("sw.js")
+    resp.headers["Service-Worker-Allowed"] = "/"
+    resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
+
+@app.get("/api/csrf")
+def csrf():
+    """The CSRF token for this session (pages get it in a <meta> tag; API clients ask here)."""
+    return jsonify({"ok": True, "csrf": security.csrf_token()})
+
+
 @app.post("/api/login")
 def login():
     d = body()
-    u = auth.authenticate(d.get("username"), d.get("password"))
+    username = str(d.get("username") or "")[:60]
+    wait = security.login_retry_after(username)
+    if wait:            # locked: refuse without even checking the password
+        return security.too_many(f"Too many failed logins. Try again in {_mins(wait)}.", wait)
+    u = auth.authenticate(username, d.get("password"))
     if not u:
-        raise ApiError("Wrong username or password", 401)
-    session.clear()
+        fails, locked = security.login_failed(username)
+        if locked:
+            db.execute("INSERT INTO audit_log (event_type, details) VALUES ('LOGIN_LOCKED', %s)",
+                       (f"'{username}' from {security.client_ip()}: {fails} failed logins, locked for "
+                        f"{security.LOGIN_WINDOW_SEC // 60} min",))
+            wait = security.login_retry_after(username)
+            return security.too_many(f"Too many failed logins. Try again in {_mins(wait)}.", wait)
+        left = security.LOGIN_MAX_FAILS_USER - fails
+        hint = f" ({left} more tr{'y' if left == 1 else 'ies'} before a {security.LOGIN_WINDOW_SEC // 60}-minute lock)" \
+            if security.RATE_LIMIT and left <= 3 else ""
+        raise ApiError("Wrong username or password" + hint, 401)
+    security.login_succeeded(username)
+    session.clear()                      # new session on login: no session fixation, new CSRF token
     session["user_id"] = u["user_id"]
     session.permanent = True
     conn = db.pooled()
@@ -219,14 +264,18 @@ def login():
         conn.commit()
     finally:
         conn.close()
-    return jsonify({"ok": True, "user": auth.public_user(u),
+    return jsonify({"ok": True, "user": auth.public_user(u), "csrf": security.csrf_token(),
                     "home": "/sos" if u["role"] == "PATIENT" else "/"})
+
+
+def _mins(sec):
+    return f"{sec} seconds" if sec < 60 else f"{(sec + 59) // 60} minute{'s' if sec > 60 else ''}"
 
 
 @app.post("/api/logout")
 def logout():
     session.clear()
-    return jsonify({"ok": True})
+    return jsonify({"ok": True, "csrf": security.csrf_token()})
 
 
 @app.get("/api/me")
@@ -307,6 +356,11 @@ def create_sos():
     data = body()
     name, phone, lat, lon, description = _validate_sos(data)
     u = auth.current_user()
+    if not (u and u["role"] in STAFF):           # staff (and the HTTP load test) are not limited
+        wait = security.sos_retry_after()
+        if wait:
+            return security.too_many(f"Too many SOS requests from this device. If this is a real emergency "
+                                     f"call 112. Try again in {_mins(wait)}.", wait)
     rid, c = insert_request(name, phone, lat, lon, data.get("emergency_type"),
                             data.get("severity"), description,
                             user_id=u["user_id"] if u and u["role"] == "PATIENT" else None)

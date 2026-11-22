@@ -1,0 +1,52 @@
+# EmergencySOS: one-command setup (Tier 3)
+#
+#     docker compose up --build        then open http://localhost:5000
+#
+# Two containers: MySQL 8 and the Flask app. The database is created with demo data
+# on the first start and kept in the "dbdata" volume afterwards.
+#   start fresh:  docker compose down -v   (deletes the volume)
+#   run tests:    docker compose exec app python -m unittest test_core
+#   load test:    docker compose exec app python load_test.py --compare-pool
+#
+# The passwords below are demo defaults. Change them with a .env file next to this one:
+#   DB_PASSWORD=...   MYSQL_ROOT_PASSWORD=...   SECRET_KEY=...
+services:
+  db:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rescuers_root_demo}
+      MYSQL_DATABASE: emergencysos
+      MYSQL_USER: sos_app
+      MYSQL_PASSWORD: ${DB_PASSWORD:-rescuers_demo}
+    # binary logging is on in MySQL 8: let the app user create triggers (see setup_mysql.py)
+    command: ["--log-bin-trust-function-creators=1"]
+    volumes:
+      - dbdata:/var/lib/mysql
+      - ./docker/mysql-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "5000:5000"
+    environment:
+      DB_HOST: db
+      DB_PORT: "3306"
+      DB_USER: sos_app
+      DB_PASSWORD: ${DB_PASSWORD:-rescuers_demo}
+      DB_NAME: emergencysos
+      SECRET_KEY: ${SECRET_KEY:-}
+      ROUTING_MODE: ${ROUTING_MODE:-osrm}
+      CASE_TIME_SCALE: ${CASE_TIME_SCALE:-1}
+
+volumes:
+  dbdata:

@@ -44,11 +44,18 @@ $("#langBtn").addEventListener("click", () => {
   applyLang();
 });
 
+// CSRF token (Tier 3): sent with every POST; the page has it in a <meta> tag
+st.csrf = document.querySelector('meta[name="csrf-token"]')?.content || "";
 async function api(path, opts = {}) {
-  const o = { headers: { "Content-Type": "application/json" }, ...opts };
+  const o = { headers: { "Content-Type": "application/json", "X-CSRF-Token": st.csrf }, ...opts };
   if (o.body && typeof o.body !== "string") o.body = JSON.stringify(o.body);
   let res, data;
   try { res = await fetch(path, o); data = await res.json(); } catch { throw new Error(t("noServer")); }
+  if (res.status === 403 && data.csrf && !opts._retried) {      // token expired: get a fresh one, try once more
+    try { st.csrf = (await (await fetch("/api/csrf")).json()).csrf; } catch { /* offline */ }
+    return api(path, { ...opts, _retried: true });
+  }
+  if (data?.csrf && typeof data.csrf === "string") st.csrf = data.csrf;
   if (!res.ok || data.ok === false) throw new Error(data.error || `Error ${res.status}`);
   return data;
 }
@@ -116,7 +123,7 @@ $("#sev").addEventListener("click", (e) => {
 function setupMap() {
   if (!window.L) { $("#pickMap").classList.add("hidden"); $("#locText").textContent = t("mapOffline"); return; }
   st.map = L.map("pickMap", { zoomControl: true }).setView([30.30, 78.04], 12);
-  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 18, attribution: "&copy; OpenStreetMap" }).addTo(st.map);
+  sosBaseLayer(st.map, { places: st.meta.locations });          // street map, offline fallback
   st.pin = L.marker([30.30, 78.04], { draggable: true }).addTo(st.map);
   st.pin.on("dragend", () => { const p = st.pin.getLatLng(); setLocation(p.lat, p.lng, { key: "pinOnMap" }, false); });
   st.map.on("click", (e) => setLocation(e.latlng.lat, e.latlng.lng, { key: "pinOnMap" }, false));
@@ -264,7 +271,7 @@ function drawRoute(s) {
   box.classList.remove("hidden");
   if (!st.trackMap) {
     st.trackMap = L.map("trackMap");
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 18, attribution: "&copy; OpenStreetMap" }).addTo(st.trackMap);
+    sosBaseLayer(st.trackMap, { places: st.meta?.locations || [] });
     st.trackLayer = L.layerGroup().addTo(st.trackMap);
   }
   st.trackLayer.clearLayers();

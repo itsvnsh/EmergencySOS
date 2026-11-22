@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <meta name="csrf-token" content="{{ csrf_token() }}">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#dc2626">
   <title>Send SOS · EmergencySOS</title>
@@ -75,6 +76,7 @@
 
 <div id="toast" class="toast" role="status"></div>
 <script src="{{ url_for('static', filename='vendor/leaflet/leaflet.js') }}"></script>
+<script src="{{ url_for('static', filename='offline_map.js') }}"></script>
 <script src="{{ url_for('static', filename='portal_i18n.js') }}"></script>
 <script src="{{ url_for('static', filename='portal.js') }}"></script>
 </body>

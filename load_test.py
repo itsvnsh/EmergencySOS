@@ -190,8 +190,11 @@ def run_direct(clients=20, ops=15, isolation=None, release_prob=0.4, lock_timeou
 # ---------------------------------------------------------------------------
 def _http(opener, base, path, body=None):
     data = json.dumps(body).encode() if body is not None else None
+    headers = {"Content-Type": "application/json"}
+    if data is not None:                     # state-changing call: send the session's CSRF token
+        headers["X-CSRF-Token"] = getattr(opener, "csrf", "")
     req = urllib.request.Request(base + path, data=data, method="POST" if data is not None else "GET",
-                                 headers={"Content-Type": "application/json"})
+                                 headers=headers)
     try:
         with opener.open(req, timeout=30) as r:
             return r.status, json.loads(r.read())
@@ -207,7 +210,10 @@ def run_http(base, clients=20, ops=10, user="dispatcher", password="dispatch123"
     def worker(cid):
         rnd = random.Random(cid)
         opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(CookieJar()))
-        code, _ = _http(opener, base, "/api/login", {"username": user, "password": password})
+        _, d = _http(opener, base, "/api/csrf")
+        opener.csrf = d.get("csrf", "")
+        code, d = _http(opener, base, "/api/login", {"username": user, "password": password})
+        opener.csrf = d.get("csrf", opener.csrf)    # a new session (and token) after login
         if code != 200:
             with lock:
                 errors.append(f"client {cid}: login failed ({code})")

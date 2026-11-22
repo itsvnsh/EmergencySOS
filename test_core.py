@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 os.environ["DB_NAME"] = os.environ.get("DB_NAME", "emergencysos") + "_test"
 os.environ["ROUTING_MODE"] = "off"          # tests never call the internet; routing tests mock it
 os.environ["AUTO_COMPLETE"] = "0"           # tests run completion by hand
+os.environ["SOS_MAX_PER_MIN"] = "100000"    # many test SOS from 127.0.0.1; the limit has its own tests
 
 import json
 
@@ -305,6 +306,25 @@ def _db_available():
 
 
 DB_OK = _db_available()
+
+from flask.testing import FlaskClient   # noqa: E402
+
+
+class CsrfClient(FlaskClient):
+    """Test client that behaves like the real pages: every POST/PUT/PATCH/DELETE carries
+    the session's CSRF token (Tier 3). The CSRF tests use a plain FlaskClient instead."""
+    def open(self, *args, **kwargs):
+        if str(kwargs.get("method", "GET")).upper() in ("POST", "PUT", "PATCH", "DELETE"):
+            headers = dict(kwargs.pop("headers", None) or {})
+            if "X-CSRF-Token" not in headers:
+                headers["X-CSRF-Token"] = super().open("/api/csrf").get_json()["csrf"]
+            kwargs["headers"] = headers
+        return super().open(*args, **kwargs)
+
+
+if DB_OK:
+    from app import app as _flask_app
+    _flask_app.test_client_class = CsrfClient
 
 
 @unittest.skipUnless(DB_OK, "MySQL not reachable")
@@ -1438,6 +1458,245 @@ class PortalTranslationTests(unittest.TestCase):
         import re
         self.assertRegex(self.texts_hi, r"[ऀ-ॿ]")
         self.assertIsNone(re.search(r"[ऀ-ॿ]", self.texts_en.replace("हिन्दी", "")))
+
+
+# ---------------------------------------------------------------------------
+# Tier 3: rate limiting and CSRF (security.py)
+# ---------------------------------------------------------------------------
+class SlidingWindowTests(unittest.TestCase):
+    def setUp(self):
+        import security
+        self.now = [1000.0]
+        self.w = security.SlidingWindow(60, 3, clock=lambda: self.now[0])
+
+    def test_limit_and_expiry(self):
+        for i in range(2):
+            self.w.hit("k")
+            self.assertEqual(self.w.retry_after("k"), 0)
+        self.now[0] += 10
+        self.w.hit("k")                                  # 3rd within 60 s: blocked
+        self.assertEqual(self.w.retry_after("k"), 50)    # until the FIRST one leaves the window
+        self.now[0] += 50
+        self.assertEqual(self.w.retry_after("k"), 0)
+        self.assertEqual(self.w.retry_after("other"), 0)
+
+    def test_clear(self):
+        for _ in range(3):
+            self.w.hit("k")
+        self.assertGreater(self.w.retry_after("k"), 0)
+        self.w.clear("k")
+        self.assertEqual(self.w.retry_after("k"), 0)
+
+    def test_thread_safe_counting(self):
+        import threading
+        import security
+        w = security.SlidingWindow(60, 10 ** 6)
+        threads = [threading.Thread(target=lambda: [w.hit("k") for _ in range(500)]) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(w.hit("k"), 4001)               # no lost updates
+
+
+@unittest.skipUnless(DB_OK, "MySQL not reachable")
+class CsrfTests(unittest.TestCase):
+    def setUp(self):
+        from app import app
+        self.c = FlaskClient(app, app.response_class, use_cookies=True)   # NOT the auto-token client
+
+    def token(self):
+        return self.c.get("/api/csrf").get_json()["csrf"]
+
+    def test_post_without_token_refused(self):
+        r = self.c.post("/api/login", json={"username": "dispatcher", "password": "dispatch123"})
+        self.assertEqual(r.status_code, 403)
+        self.assertTrue(r.get_json()["csrf"])
+        self.assertEqual(self.c.post("/api/sos", json={}).status_code, 403)
+
+    def test_wrong_token_refused(self):
+        self.token()
+        r = self.c.post("/api/logout", headers={"X-CSRF-Token": "forged"})
+        self.assertEqual(r.status_code, 403)
+
+    def test_right_token_and_rotation_on_login(self):
+        tok = self.token()
+        r = self.c.post("/api/login", json={"username": "dispatcher", "password": "dispatch123"},
+                        headers={"X-CSRF-Token": tok})
+        self.assertEqual(r.status_code, 200)
+        new = r.get_json()["csrf"]
+        self.assertNotEqual(new, tok)                    # new session, new token
+        self.assertEqual(self.c.post("/api/dispatch", json={}, headers={"X-CSRF-Token": tok}).status_code, 403)
+        self.assertNotEqual(self.c.post("/api/dispatch", json={}, headers={"X-CSRF-Token": new}).status_code, 403)
+
+    def test_cross_origin_refused_even_with_token(self):
+        tok = self.token()
+        h = {"X-CSRF-Token": tok}
+        self.assertEqual(self.c.post("/api/logout", headers={**h, "Origin": "http://evil.example"}).status_code, 403)
+        self.assertEqual(self.c.post("/api/logout", headers={**h, "Origin": "null"}).status_code, 403)
+        self.assertEqual(self.c.post("/api/logout", headers={**h, "Sec-Fetch-Site": "cross-site"}).status_code, 403)
+        self.assertEqual(self.c.post("/api/logout", headers={**h, "Origin": "http://localhost"}).status_code, 200)
+
+    def test_reads_need_no_token(self):
+        self.assertEqual(self.c.get("/api/meta").status_code, 200)
+
+    def test_pages_carry_the_token(self):
+        for page in ("/login", "/sos"):
+            html = self.c.get(page).get_data(as_text=True)
+            self.assertIn('<meta name="csrf-token" content="', html, page)
+        tok = self.token()
+        self.assertIn(tok, self.c.get("/sos").get_data(as_text=True))    # same session, same token
+
+
+@unittest.skipUnless(DB_OK, "MySQL not reachable")
+class LoginRateLimitTests(unittest.TestCase):
+    def setUp(self):
+        import security
+        from app import app
+        security.reset_limits()
+        self.addCleanup(security.reset_limits)
+        self.c = app.test_client()
+
+    def _login(self, user, pw):
+        return self.c.post("/api/login", json={"username": user, "password": pw})
+
+    def test_locks_after_five_failures(self):
+        import db
+        import security
+        for i in range(security.LOGIN_MAX_FAILS_USER - 1):
+            self.assertEqual(self._login("dispatcher", "wrong").status_code, 401)
+        r = self._login("dispatcher", "wrong")
+        self.assertEqual(r.status_code, 429)
+        self.assertGreater(int(r.headers["Retry-After"]), 0)
+        # even the RIGHT password is refused while locked: guessing gets no answer
+        self.assertEqual(self._login("dispatcher", "dispatch123").status_code, 429)
+        # another account from the same IP is not affected
+        self.assertEqual(self._login("patient", "patient123").status_code, 200)
+        row = db.query_one("SELECT details FROM audit_log WHERE event_type = 'LOGIN_LOCKED' "
+                           "ORDER BY log_id DESC LIMIT 1")
+        self.assertIn("dispatcher", row["details"])
+
+    def test_success_clears_failures(self):
+        for _ in range(4):
+            self._login("dispatcher", "wrong")
+        self.assertEqual(self._login("dispatcher", "dispatch123").status_code, 200)
+        for _ in range(4):
+            self.assertEqual(self._login("dispatcher", "wrong").status_code, 401)
+
+    def test_warning_before_lock(self):
+        msgs = [self._login("dispatcher", "wrong").get_json()["error"] for _ in range(4)]
+        self.assertNotIn("before", msgs[0])
+        self.assertIn("1 more try", msgs[3])
+
+    def test_ip_wide_limit_stops_password_spraying(self):
+        from unittest import mock
+        import security
+        with mock.patch.object(security, "login_ip_fails", security.SlidingWindow(300, 3)):
+            for name in ("a1", "a2", "a3"):
+                self._login(name, "x")
+            self.assertEqual(self._login("dispatcher", "dispatch123").status_code, 429)
+
+    def test_switch_off(self):
+        from unittest import mock
+        import security
+        with mock.patch.object(security, "RATE_LIMIT", False):
+            for _ in range(8):
+                self.assertEqual(self._login("dispatcher", "wrong").status_code, 401)
+
+
+@unittest.skipUnless(DB_OK, "MySQL not reachable")
+class SosRateLimitTests(unittest.TestCase):
+    SOS = {"patient_name": "Flood", "emergency_type": "GENERAL", "severity": 1,
+           "latitude": 30.27, "longitude": 77.99}
+
+    def test_anonymous_sos_limited_staff_not(self):
+        from unittest import mock
+        import security
+        from app import app
+        with mock.patch.object(security, "sos_per_ip", security.SlidingWindow(60, 2)):
+            anon = app.test_client()
+            self.assertEqual(anon.post("/api/sos", json=self.SOS).status_code, 201)
+            self.assertEqual(anon.post("/api/sos", json=self.SOS).status_code, 201)
+            r = anon.post("/api/sos", json=self.SOS)
+            self.assertEqual(r.status_code, 429)
+            self.assertIn("112", r.get_json()["error"])
+            staff = app.test_client()
+            login(staff, "dispatcher", "dispatch123")
+            for _ in range(3):
+                self.assertEqual(staff.post("/api/sos", json=self.SOS).status_code, 201)
+
+
+# ---------------------------------------------------------------------------
+# Tier 3: offline map and Docker
+# ---------------------------------------------------------------------------
+class OfflineMapTests(unittest.TestCase):
+    def read(self, *path):
+        with open(os.path.join(HERE, *path), encoding="utf-8") as f:
+            return f.read()
+
+    def test_service_worker_caches_only_map_tiles(self):
+        import re
+        sw = self.read("static", "sw.js")
+        pattern = re.search(r"const isTile = \(url\) => /(.+)/\.test\(url\);", sw).group(1).replace("\\/", "/")
+        self.assertTrue(re.match(pattern, "https://b.tile.openstreetmap.org/12/2925/1680.png"))
+        self.assertFalse(re.match(pattern, "http://localhost:5000/api/map"))
+        self.assertFalse(re.match(pattern, "https://router.project-osrm.org/route/v1/x"))
+
+    def test_every_map_uses_the_fallback(self):
+        for js in (("static", "app.js"), ("static", "portal.js")):
+            src = self.read(*js)
+            self.assertNotIn("L.tileLayer(", src, js)                  # no map without the fallback
+            self.assertIn("sosBaseLayer(", src, js)
+        for page in ("index.html", "sos.html"):
+            html = self.read("templates", page)
+            self.assertLess(html.index("leaflet.js"), html.index("offline_map.js"))
+
+    @unittest.skipUnless(DB_OK, "MySQL not reachable")
+    def test_service_worker_served_from_root(self):
+        from app import app
+        r = app.test_client().get("/sw.js")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.headers["Service-Worker-Allowed"], "/")
+        self.assertIn("javascript", r.headers["Content-Type"])
+        r.close()
+
+
+class DockerSetupTests(unittest.TestCase):
+    def read(self, *path):
+        with open(os.path.join(HERE, *path), encoding="utf-8") as f:
+            return f.read()
+
+    def test_secrets_stay_out_of_the_image(self):
+        ignored = self.read(".dockerignore").split()
+        for secret in ("db_login.json", ".secret_key", ".env", "venv/"):
+            self.assertIn(secret, ignored)
+
+    def test_compose_wires_app_to_mysql(self):
+        y = self.read("docker-compose.yml")
+        self.assertIn("image: mysql:8.0", y)
+        self.assertIn("--log-bin-trust-function-creators=1", y)            # triggers work in Docker
+        self.assertIn("condition: service_healthy", y)                     # app waits for MySQL
+        self.assertIn("DB_HOST: db", y)
+        self.assertIn('"5000:5000"', y)
+        self.assertIn("emergencysos_test", self.read("docker", "mysql-init", "01-grants.sql"))
+
+    def test_dockerfile_runs_the_entrypoint_as_non_root(self):
+        d = self.read("Dockerfile")
+        self.assertIn("USER sos", d)
+        self.assertIn('CMD ["python", "docker/entrypoint.py"]', d)
+        self.assertIn("FLASK_HOST=0.0.0.0", d)
+
+    @unittest.skipUnless(DB_OK, "MySQL not reachable")
+    def test_entrypoint_detects_first_start(self):
+        import importlib.util
+        from unittest import mock
+        spec = importlib.util.spec_from_file_location("sos_entrypoint", os.path.join(HERE, "docker", "entrypoint.py"))
+        ep = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(ep)
+        ep.wait_for_mysql()
+        self.assertTrue(ep.has_tables())
+        with mock.patch.object(config, "DB_NAME", "emergencysos_no_such_db"):
+            self.assertFalse(ep.has_tables())
 
 
 if __name__ == "__main__":

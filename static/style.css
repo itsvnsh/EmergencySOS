@@ -406,3 +406,14 @@ pre.sql { font: 12px/1.45 var(--mono); background: var(--soft); border: 1px soli
   .kpi b { font-size: 22px; }
   .cols { gap: 1px; }
 }
+
+/* Tier 3: offline map notice (static/offline_map.js) */
+.offline-note {
+  background: #fff; border: 1px solid #cbd5e1; border-left: 4px solid #1565c0; border-radius: 8px;
+  padding: 6px 10px; font-size: 12px; line-height: 1.4; max-width: 300px; color: #1f2937;
+  box-shadow: 0 2px 8px rgba(15, 40, 80, .15);
+}
+.offline-note button {
+  margin-left: 4px; border: 1px solid #1565c0; background: #fff; color: #1565c0; border-radius: 6px;
+  padding: 1px 8px; font: inherit; font-size: 12px; cursor: pointer;
+}
