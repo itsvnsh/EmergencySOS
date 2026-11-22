@@ -1,0 +1,411 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>EmergencySOS - DBMS &amp; OS concepts guide</title>
+<style>
+  @page {
+    size: A4; margin: 16mm 15mm 18mm 15mm;
+    @bottom-left { content: "EmergencySOS · DBMS & OS concepts guide · Team Rescuers"; font: 8pt "Segoe UI", Arial, sans-serif; color: #6b7280; border-top: 1px solid #dc2626; }
+    @bottom-right { content: "Page " counter(page); font: 8pt "Segoe UI", Arial, sans-serif; color: #6b7280; border-top: 1px solid #dc2626; }
+  }
+  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  table.wrap td code { overflow-wrap: anywhere; }
+  :root { --blue: #1565c0; --blue-dark: #0d47a1; --red: #dc2626; --green: #16a34a; --soft: #e3effc; --ink: #1f2937; --muted: #6b7280; --line: #dbe3ee; }
+  * { box-sizing: border-box; }
+  body { font: 10pt/1.45 "Segoe UI", "DejaVu Sans", Arial, sans-serif; color: var(--ink); margin: 0; }
+  code, .mono { font-family: "Cascadia Mono", Consolas, "DejaVu Sans Mono", monospace; font-size: 8.8pt; color: var(--blue-dark); }
+  pre { font-family: "Cascadia Mono", Consolas, monospace; font-size: 8.5pt; background: #f5f8fc; border: 1px solid var(--line); border-radius: 4px; padding: 7px 10px; margin: 6px 0; white-space: pre-wrap; }
+  .cover { background: var(--blue); color: #fff; padding: 16px 20px 14px; border-bottom: 4px solid var(--red); border-radius: 2px; margin-bottom: 12px; }
+  .cover h1 { margin: 0; font-size: 26pt; }
+  .cover .sub { font-size: 13pt; margin-top: 2px; }
+  .cover .team { font-size: 9pt; color: #dbeafe; margin-top: 6px; }
+  .part { color: #fff; padding: 10px 16px; font-size: 17pt; font-weight: 700; margin: 18px 0 10px; border-radius: 2px; break-after: avoid; }
+  .part.a { background: var(--blue); } .part.b { background: var(--red); } .part.c { background: var(--green); } .part.d { background: var(--blue); }
+  .part.e { background: #6b21a8; }
+  h2 { color: var(--blue-dark); font-size: 13pt; margin: 14px 0 4px; break-after: avoid; }
+  h2 .new { font-size: 8pt; background: var(--green); color: #fff; border-radius: 3px; padding: 1px 5px; vertical-align: 2px; margin-left: 6px; font-weight: 600; }
+  p { margin: 4px 0; }
+  .file { margin: 2px 0 4px; }
+  table { width: 100%; border-collapse: collapse; margin: 6px 0 8px; font-size: 9pt; break-inside: auto; }
+  tr { break-inside: avoid; }
+  th { background: var(--soft); color: var(--blue-dark); text-align: left; padding: 4px 6px; font-weight: 700; }
+  td { padding: 4px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  ul { margin: 4px 0 6px; padding-left: 18px; } li { margin: 2px 0; }
+  .note { background: var(--soft); border-left: 4px solid var(--blue); padding: 6px 10px; margin: 8px 0; break-inside: avoid; }
+  .note.warn { background: #fee2e2; border-left-color: var(--red); }
+  .note.ok { background: #dcfce7; border-left-color: var(--green); }
+  .changes td:first-child { white-space: nowrap; font-weight: 600; }
+  .pb { break-before: page; }
+  table.keep { break-inside: avoid; }
+  .small { font-size: 8.5pt; color: var(--muted); }
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <h1>EmergencySOS</h1>
+  <div class="sub">DBMS &amp; OS Concepts: where each one is in the code</div>
+  <div class="team">Team Rescuers · OSDBMS-V-2026-T203 · B.Tech CSE, Graphic Era (Deemed to be University) · Updated guide (Phase III + Tier 1, 2 and 3)</div>
+</div>
+
+<p>This guide maps every DBMS and OS concept used in EmergencySOS to the file and function that implements it.
+File names and line numbers match the current version of the project: <b>Flask + PyMySQL + MySQL 8, 133 automated tests</b>
+(run them with <code>python -m unittest test_core</code>).</p>
+
+<div class="note">
+<b>What changed since the first version of this guide</b>
+<table class="changes">
+  <tr><td>Tests</td><td>35 → <b>133</b> automated tests.</td></tr>
+  <tr><td>Schema</td><td>6 → <b>8 tables</b> (<code>users</code>, <code>request_status_history</code>), plus <b>5 views, 5 triggers, 2 stored procedures</b> in <code>schema_objects.sql</code>.</td></tr>
+  <tr><td>Lock order</td><td>Now <b>request → hospital → care unit → doctor → ambulance → allocation</b> (the hospital row and the ambulance were added).</td></tr>
+  <tr><td>New OS concepts</td><td>Ambulances as a second resource (no hold-and-wait), <b>Banker's algorithm</b>, <b>deadlock detection</b> with a wait-for graph, connection pool as a <b>counting semaphore</b>, rate-limit counters as a critical section.</td></tr>
+  <tr><td>Web page</td><td>The race demo is now in the web page (Deadlock Lab tab), not only in the terminal. New tabs: Dashboard, Deadlock Lab, Database.</td></tr>
+  <tr><td>Security</td><td>Login rate limiting, CSRF protection, new session on login (Part E).</td></tr>
+</table>
+</div>
+
+<h2>0. How a request flows through the project</h2>
+<pre>SOS form -&gt; classifier.py -&gt; scheduler.py -&gt; ranking.py -&gt; transaction_manager.py -&gt; MySQL
+(patient)   (priority,       (who goes     (which         (lock, Banker's check,     (tables,
+            burst time)      next? = OS)   hospital?)     commit/rollback = DBMS)    triggers)</pre>
+<ul>
+  <li><b>OS part:</b> each SOS request is a <b>process</b>, the dispatcher is the <b>CPU</b>, and beds, ventilators, operation theatres, doctors and <b>ambulances</b> are <b>shared resources</b>.</li>
+  <li><b>DBMS part:</b> all data lives in MySQL, every booking is one <b>ACID transaction</b>, and the database itself guards its rules with constraints and triggers.</li>
+</ul>
+
+<!-- ===================================================================== -->
+<div class="part a">PART A — DBMS CONCEPTS</div>
+
+<h2>A1. Relational schema (tables, keys, relationships)</h2>
+<p class="file"><b>File:</b> <code>schema.sql</code> (tables) · <code>schema_objects.sql</code> (views, triggers, procedures) · ER diagram: <code>docs/er_diagram.png</code></p>
+<table>
+  <tr><th>Table</th><th>What it stores</th><th>Primary key</th><th>Foreign keys</th></tr>
+  <tr><td><code>hospitals</code></td><td>name, area, location, phone</td><td><code>hospital_id</code></td><td>none</td></tr>
+  <tr><td><code>resources</code></td><td>ICU beds, ventilators, OTs, general beds <b>and ambulances</b> per hospital (total and free)</td><td><code>resource_id</code></td><td><code>hospital_id</code> → hospitals</td></tr>
+  <tr><td><code>doctors</code></td><td>doctor, specialization, shift, current / max cases</td><td><code>doctor_id</code></td><td><code>hospital_id</code> → hospitals</td></tr>
+  <tr><td><code>users</code></td><td>logins: patient, dispatcher, hospital admin (password hash, role)</td><td><code>user_id</code></td><td><code>hospital_id</code> → hospitals (admin of one hospital)</td></tr>
+  <tr><td><code>sos_requests</code></td><td>patient, emergency type, severity, priority, status, tracking token</td><td><code>request_id</code></td><td><code>user_id</code> → users</td></tr>
+  <tr><td><code>allocations</code></td><td>which patient got which hospital, unit, doctor and ambulance; expected end time</td><td><code>allocation_id</code></td><td>request, hospital, resource, doctor, ambulance (resource)</td></tr>
+  <tr><td><code>audit_log</code></td><td>history of every event and who did it</td><td><code>log_id</code></td><td>none</td></tr>
+  <tr><td><code>request_status_history</code></td><td>every status change of a request, <b>written only by triggers</b></td><td><code>history_id</code></td><td><code>request_id</code> → sos_requests</td></tr>
+</table>
+<p><b>Relationships (ER diagram):</b> Hospital 1:N Resources · Hospital 1:N Doctors · Hospital 1:N Users (admins) · User 1:N SOS requests ·
+SOS request 1:N Allocations · Allocation N:1 Doctor (optional) · Allocation N:1 Ambulance resource · SOS request 1:N Status history.</p>
+
+<h2>A2. Integrity constraints</h2>
+<p class="file"><b>File:</b> <code>schema.sql</code></p>
+<table class="wrap">
+  <tr><th>Constraint type</th><th>Example in the code</th><th>Why</th></tr>
+  <tr><td><b>Primary key</b></td><td><code>hospital_id INT AUTO_INCREMENT PRIMARY KEY</code></td><td>Every row is unique</td></tr>
+  <tr><td><b>Foreign key</b></td><td><code>fk_res_hospital</code>, <code>fk_alloc_ambulance</code> (line 177)</td><td>No resource or allocation pointing at nothing</td></tr>
+  <tr><td><b>ON DELETE CASCADE</b></td><td>Deleting a hospital deletes its resources and doctors</td><td>Referential integrity</td></tr>
+  <tr><td><b>ON DELETE SET NULL</b></td><td><code>fk_alloc_doctor</code>, <code>fk_req_user</code></td><td>Keeps the patient's record if a doctor or user is deleted</td></tr>
+  <tr><td><b>ON DELETE RESTRICT</b></td><td><code>fk_user_hospital</code> (line 106)</td><td>A hospital with an admin cannot be deleted by accident</td></tr>
+  <tr><td><b>UNIQUE</b></td><td><code>uq_res_hosp_type (hospital_id, resource_type)</code>, hospital name, username, tracking token</td><td>One ICU_BED row per hospital</td></tr>
+  <tr><td><b>CHECK</b></td><td><code>chk_res_avail CHECK (available_units &gt;= 0 AND available_units &lt;= total_units)</code></td><td>The database itself refuses negative beds or overbooking</td></tr>
+  <tr><td><b>CHECK</b></td><td><code>chk_doc_cases</code>, <code>chk_req_severity</code>, latitude / longitude ranges</td><td>Valid data only</td></tr>
+  <tr><td><b>CHECK (business rule)</b></td><td><code>chk_user_hospital CHECK (hospital_id IS NULL OR role = 'HOSPITAL_ADMIN')</code></td><td>Only admins can belong to a hospital</td></tr>
+  <tr><td><b>NOT NULL / DEFAULT</b></td><td><code>status ... DEFAULT 'PENDING'</code>, <code>created_at DEFAULT CURRENT_TIMESTAMP</code></td><td>Required values</td></tr>
+  <tr><td><b>ENUM (domain)</b></td><td><code>resource_type ENUM('ICU_BED','VENTILATOR','OPERATION_THEATRE','GENERAL_BED','AMBULANCE')</code></td><td>Only allowed values</td></tr>
+  <tr><td><b>Trigger (rule a CHECK cannot express)</b></td><td><code>trg_allocation_same_hospital</code>, <code>trg_request_state_guard</code> (A12)</td><td>Rules that look at other rows or at the old value</td></tr>
+</table>
+<p><b>Test that proves it:</b> <code>test_check_constraint_blocks_negative_units</code> in <code>test_core.py</code> (line 336).</p>
+
+<h2>A3. Indexes</h2>
+<p class="file"><b>File:</b> <code>schema.sql</code>. Composite (multi-column) B-tree indexes.</p>
+<table>
+  <tr><th>Index</th><th>Speeds up</th></tr>
+  <tr><td><code>idx_req_queue (status, is_lab, priority, created_at)</code></td><td>Pending requests in priority / arrival order (the scheduler's query)</td></tr>
+  <tr><td><code>idx_res_type_avail (resource_type, available_units)</code></td><td>Hospitals with a free unit of a type</td></tr>
+  <tr><td><code>idx_doc_lookup (hospital_id, specialization, on_shift)</code></td><td>Finding a free specialist</td></tr>
+  <tr><td><code>idx_alloc_status (status, hospital_id)</code></td><td>The Active allocations table</td></tr>
+  <tr><td><code>idx_alloc_due (status, expected_end_at)</code></td><td>The auto-completion worker: cases whose time is over</td></tr>
+  <tr><td><code>idx_alloc_amb_due (ambulance_returned_at, ambulance_due_at)</code></td><td>Ambulances due back</td></tr>
+  <tr><td><code>idx_audit_time (created_at)</code> · <code>idx_hist_request (request_id, changed_at)</code></td><td>Latest audit events · a request's status history</td></tr>
+</table>
+
+<h2>A4. Normalization</h2>
+<p>Each table describes one thing. Repeating data such as "a hospital has 5 unit types" goes in a separate table (<code>resources</code>), not 5 columns. That is 1NF and 2NF thinking; adding ambulances needed <b>no new table</b>, only a new ENUM value, which shows the design was normalized.</p>
+<div class="note"><b>Be ready for this viva question.</b> Two small, <b>deliberate</b> exceptions to strict 3NF:<br>
+• <code>allocations.hospital_id</code> can be worked out from <code>resource_id</code>. It is stored so the Active allocations query needs no extra join (and a trigger, <code>trg_allocation_same_hospital</code>, keeps it consistent).<br>
+• <code>sos_requests.priority</code>, <code>required_resource</code> ... are calculated from type and severity; they are a <b>snapshot</b> of the decision at SOS time, so changing the classifier later does not rewrite history.<br>
+If asked, call this <b>controlled denormalization for performance and history</b>.</div>
+
+<h2>A5. Transactions and ACID</h2>
+<p class="file"><b>File:</b> <code>transaction_manager.py</code>, function <code>_try_reserve()</code> (line 92). Booking a patient is <b>one transaction</b>:</p>
+<ul>
+  <li>1. Locks the request row and re-checks it is still PENDING</li>
+  <li>2. Locks the <b>hospital row</b> (so admissions at one hospital are checked one at a time)</li>
+  <li>3. Locks the hospital's care-unit counter and re-checks it is still free</li>
+  <li>4. Locks one free doctor of the right specialization</li>
+  <li>5. Locks the hospital's <b>ambulance</b> counter; no free ambulance means rollback (bed and ambulance are taken together or not at all)</li>
+  <li>6. Runs the <b>Banker's safety check</b> (B10); an unsafe state means rollback</li>
+  <li>7. Updates the counters, marks the request ALLOCATED, inserts the allocation row and an audit row</li>
+</ul>
+<p>Then <b>COMMIT</b> saves all of it, or <b>ROLLBACK</b> undoes all of it.</p>
+<table>
+  <tr><th>ACID property</th><th>How the project gets it</th></tr>
+  <tr><td><b>Atomicity</b></td><td>All updates commit together or none do (<code>conn.commit()</code> / <code>conn.rollback()</code>). You never get a bed taken with no allocation row, or a bed without its ambulance.</td></tr>
+  <tr><td><b>Consistency</b></td><td>CHECK constraints, triggers and the re-check under lock: free units never go below 0 or above the total. <code>load_test.py</code> checks this after hundreds of concurrent bookings.</td></tr>
+  <tr><td><b>Isolation</b></td><td><code>REPEATABLE READ</code> plus row locks: two dispatchers never see each other's half-done work.</td></tr>
+  <tr><td><b>Durability</b></td><td>InnoDB writes committed data to its redo log on disk, so it survives a crash.</td></tr>
+</table>
+<p><b>Where the isolation level is set:</b> <code>config.py</code> → <code>ISOLATION_LEVEL = "REPEATABLE READ"</code>; <code>transaction_manager.py</code> → <code>_begin()</code> (line 58).</p>
+<p><b>Other transactions:</b> <code>_try_release()</code> (line 253, Release button and auto-completion) · <code>_try_return_ambulance()</code> (line 316) · <code>_try_update_resource()</code> (line 381) · <code>_try_set_shift()</code> (line 410) · <code>app.py → insert_request()</code> (line 326) · every admin change in <code>admin_ops.py</code>.</p>
+
+<h2>A6. Concurrency control and locking</h2>
+<p class="file"><b>File:</b> <code>transaction_manager.py</code></p>
+<ul>
+  <li><code>SELECT ... FOR UPDATE</code> takes an <b>exclusive (X) row lock</b>. If two dispatchers try to book the last ICU bed, the second waits until the first commits, then sees "0 free" and rolls back.</li>
+  <li><b>Strict two-phase locking (strict 2PL):</b> InnoDB keeps every lock until COMMIT or ROLLBACK (growing phase while the transaction runs, everything released at the end).</li>
+  <li><b>MVCC:</b> ordinary SELECTs, such as the ranking in <code>ranking.py → fetch_candidates()</code> (line 33) and the Dashboard queries, read a consistent snapshot without blocking anyone: <b>pessimistic locking for writes, non-blocking reads for display</b>.</li>
+  <li><b>Lock wait timeout:</b> <code>LOCK_WAIT_TIMEOUT_SEC = 5</code> in <code>config.py</code>, applied in <code>db.py → get_connection()</code> (line 42).</li>
+  <li><b>Isolation levels compared:</b> <code>python load_test.py</code> runs the same load at READ COMMITTED, REPEATABLE READ and SERIALIZABLE; all stay consistent because the safety comes from the row locks.</li>
+</ul>
+
+<h2>A7. Concurrency problems you prevent</h2>
+<table>
+  <tr><th>Problem</th><th>What would happen</th><th>How it is prevented</th></tr>
+  <tr><td><b>Lost update / race condition</b></td><td>Two dispatchers both read "1 bed free" and both book it</td><td><code>FOR UPDATE</code> lock plus re-check (<code>_try_reserve</code>)</td></tr>
+  <tr><td><b>Double allocation</b></td><td>One patient gets two beds</td><td>Lock the request row and check <code>status = 'PENDING'</code></td></tr>
+  <tr><td><b>Stale data</b></td><td>The ranking said "Hospital A has a bed", but it filled up a second ago</td><td>The re-check under lock fails → ROLLBACK → next hospital (<code>reserve()</code>, line 199)</td></tr>
+  <tr><td><b>Half-done transaction reused</b></td><td>A pooled connection handed out with an open transaction and its locks</td><td>The pool rolls back before reuse (<code>db.py → give_back()</code>, line 139)</td></tr>
+</table>
+<p><b>Proof:</b> <code>concurrency_lab.py</code> and the <b>Deadlock Lab tab</b> in the web page: 6 threads try to book <b>1 bed</b> at once.
+No locks (<code>_unsafe_book()</code>, line 91): <b>6 bookings for 1 bed</b>. Python locked version (<code>tm.reserve</code>): <b>exactly 1</b>. Stored procedure version (<code>_procedure_book()</code>, line 113): <b>exactly 1</b>.
+Tests: <code>test_race_unlocked_overbooks</code> (342), <code>test_race_locked_books_once</code> (348), <code>test_stale_ranking_falls_back</code> (361), <code>test_no_double_allocation_of_same_request</code> (395).</p>
+
+<h2>A8. Deadlock handling (DBMS side)</h2>
+<ul>
+  <li><b>Prevention:</b> every transaction locks rows in the same global order: <b>request → hospital → care unit → doctor → ambulance → allocation</b>. The stored procedure <code>sp_allocate_unit</code> uses the same order.</li>
+  <li><b>Detection and recovery:</b> if InnoDB detects a deadlock (error <b>1213</b>) or a lock wait timeout (<b>1205</b>), <code>_with_retry()</code> (line 64) rolls back, waits a small random time (<b>backoff</b>) and retries up to 3 times (<code>MAX_TX_RETRIES</code>).</li>
+  <li><b>Shown live:</b> the Deadlock Lab (B11) breaks the order on purpose so you can watch InnoDB pick a victim.</li>
+</ul>
+
+<h2>A9. Audit log and status history</h2>
+<ul>
+  <li><code>audit_log</code> table; helper <code>db.py → log_event()</code> (line 291) writes with the <b>same cursor</b>, so the log row is part of the same transaction: if the booking rolls back, its log row disappears too.</li>
+  <li><code>request_status_history</code> is written <b>only by triggers</b> (A12), so no application bug can skip a step.</li>
+  <li>To view: <code>python audit_log.py</code>, the Audit log tab, or <code>/api/audit</code>; history in the Database tab.</li>
+</ul>
+
+<h2>A10. SQL features used</h2>
+<ul>
+  <li><b>DDL:</b> CREATE TABLE / INDEX / VIEW / TRIGGER / PROCEDURE, DROP (run by <code>init_db.py → create_tables()</code>, which understands <code>DELIMITER</code>).</li>
+  <li><b>DML:</b> INSERT, UPDATE, DELETE, SELECT throughout.</li>
+  <li><b>JOINs:</b> <code>app.py → list_allocations()</code> (line 494) joins allocations, requests, hospitals and doctors with a <b>LEFT JOIN</b> for the optional doctor. <code>ranking.py → fetch_candidates()</code> uses a JOIN plus <b>correlated subqueries</b> and <b>SUM</b>.</li>
+  <li><b>EXISTS subquery:</b> <code>app.py → _real_workload()</code> (line 833).</li>
+  <li><b>Aggregates and GROUP BY:</b> <code>dashboard.py</code>: <code>COUNT</code>, <code>AVG(TIMESTAMPDIFF(...))</code>, cases per hour with <code>DATE_FORMAT ... GROUP BY</code>.</li>
+  <li><b>Functions:</b> <code>LEAST()</code> / <code>GREATEST()</code> in <code>_try_release()</code> keep counters within limits; <code>NOW() - INTERVAL n MINUTE</code> in <code>insert_request()</code>.</li>
+  <li><b>Parameterized queries (<code>%s</code>)</b> everywhere: no SQL injection.</li>
+  <li><b>Least privilege:</b> <code>setup_mysql.py</code> creates the app user <code>sos</code> with rights only on the project's two databases.</li>
+</ul>
+
+<h2>A11. Views <span class="new">NEW</span></h2>
+<p class="file"><b>File:</b> <code>schema_objects.sql</code> · shown in the <b>Database</b> tab (Show rows / SQL)</p>
+<table>
+  <tr><th>View</th><th>What it shows</th></tr>
+  <tr><td><code>v_hospital_capacity</code></td><td>Free / total units per hospital and type</td></tr>
+  <tr><td><code>v_doctor_load</code></td><td>Each doctor's current cases against their maximum</td></tr>
+  <tr><td><code>v_active_cases</code></td><td>Active cases: patient, hospital, unit, doctor, minutes elapsed / left, ambulance on the road or back</td></tr>
+  <tr><td><code>v_pending_queue</code></td><td>Waiting patients with <b>aging computed in SQL</b> (same rule as the scheduler)</td></tr>
+  <tr><td><code>v_hospital_performance</code></td><td>Per hospital: cases total / active / done, average wait and distance (<code>LEFT JOIN</code> + <code>GROUP BY</code>, <code>COALESCE</code> for hospitals with none)</td></tr>
+</table>
+<p>A view is a stored query: the application reads it like a table, and the logic lives once, in the database.</p>
+
+<h2>A12. Triggers <span class="new">NEW</span></h2>
+<p class="file"><b>File:</b> <code>schema_objects.sql</code> (lines 122-216)</p>
+<table>
+  <tr><th>Trigger</th><th>When</th><th>What it does</th></tr>
+  <tr><td><code>trg_request_state_guard</code></td><td>BEFORE UPDATE on sos_requests</td><td>Allows only PENDING → ALLOCATED → COMPLETED and PENDING → CANCELLED; anything else (e.g. COMPLETED → PENDING) is refused with <code>SIGNAL SQLSTATE '45000'</code>. This is the <b>process state machine</b> enforced by the database.</td></tr>
+  <tr><td><code>trg_request_history_insert</code> / <code>_update</code></td><td>AFTER INSERT / UPDATE</td><td>Writes every status change into <code>request_status_history</code></td></tr>
+  <tr><td><code>trg_allocation_same_hospital</code></td><td>BEFORE INSERT on allocations</td><td>Unit, doctor and ambulance must belong to the booked hospital (a CHECK cannot look at other rows)</td></tr>
+  <tr><td><code>trg_resource_capacity_alert</code></td><td>AFTER UPDATE on resources</td><td>Audit row when a unit type runs out (CAPACITY_ALERT) or comes back</td></tr>
+</table>
+<div class="note warn"><b>Setup note:</b> MySQL 8 has binary logging on, so only an admin may allow triggers. Run once:
+<code>python setup_mysql.py --triggers-only</code>, then <code>python init_db.py</code>. Tests: <code>test_state_machine_trigger</code> (1098), <code>test_capacity_alert_trigger</code> (1131).</div>
+
+<h2>A13. Stored procedures <span class="new">NEW</span></h2>
+<ul>
+  <li><code>sp_allocate_unit(p_request_id, p_hospital_id, ..., OUT p_result, OUT p_allocation_id)</code> (line 218): the <b>whole booking transaction in pure SQL</b>, same lock order, with an <code>EXIT HANDLER</code> that does ROLLBACK and <code>RESIGNAL</code>. The race demo can book through it (6 clients → exactly 1 booking).</li>
+  <li><code>sp_hospital_report(p_hospital_id)</code> (line 313): one CALL returns <b>two result sets</b> (its units from <code>v_hospital_capacity</code> and its doctors from <code>v_doctor_load</code>).</li>
+</ul>
+
+<!-- ===================================================================== -->
+<div class="part b">PART B — OS CONCEPTS</div>
+
+<h2>B1. The OS mapping (say this first in the viva)</h2>
+<table>
+  <tr><th>OS concept</th><th>In EmergencySOS</th><th>Where</th></tr>
+  <tr><td><b>Process</b></td><td>One SOS request</td><td><code>sos_requests</code> table</td></tr>
+  <tr><td><b>CPU</b></td><td>The single dispatcher, one case at a time</td><td><code>scheduler.py</code></td></tr>
+  <tr><td><b>Ready queue</b></td><td>Pending requests</td><td><code>app.py → pending_requests()</code> (line 187), view <code>v_pending_queue</code></td></tr>
+  <tr><td><b>Process states</b></td><td>PENDING (ready) → ALLOCATED (running, holding resources) → COMPLETED (terminated); CANCELLED</td><td><code>status</code> column, enforced by <code>trg_request_state_guard</code></td></tr>
+  <tr><td><b>Burst time</b></td><td><code>est_handling_min</code></td><td><code>classifier.py → classify()</code></td></tr>
+  <tr><td><b>Arrival time</b></td><td><code>created_at</code></td><td><code>sos_requests</code></td></tr>
+  <tr><td><b>Process priority</b></td><td>priority 1–5 from type and severity</td><td><code>classifier.py</code></td></tr>
+  <tr><td><b>Shared resources</b></td><td>ICU beds, ventilators, OTs, general beds, doctors, <b>ambulances</b>, <b>database connections</b></td><td><code>resources</code>, <code>doctors</code>, <code>db.py</code> pool</td></tr>
+</table>
+
+<h2>B2. CPU scheduling algorithms</h2>
+<p class="file"><b>File:</b> <code>scheduler.py</code>. All <b>non-preemptive</b>: once the dispatcher starts a case it finishes it.</p>
+<table>
+  <tr><th>Algorithm</th><th>Rule</th><th>Code</th></tr>
+  <tr><td><b>FCFS</b></td><td>Earliest arrival first</td><td><code>_sort_key()</code> (line 78), <code>"FCFS"</code></td></tr>
+  <tr><td><b>SJF</b></td><td>Smallest burst time first</td><td><code>_sort_key()</code>, <code>"SJF"</code></td></tr>
+  <tr><td><b>Priority</b></td><td>Lowest priority number first</td><td><code>_sort_key()</code>, <code>"PRIORITY_NO_AGING"</code></td></tr>
+  <tr><td><b>Priority with aging</b></td><td>Priority improves while waiting</td><td><code>"PRIORITY"</code> + <code>effective_priority()</code> (line 61)</td></tr>
+  <tr><td><b>Multilevel Queue</b></td><td>3 queues with fixed priority between them</td><td><code>"MLQ"</code> + <code>mlq_level()</code> (line 70)</td></tr>
+  <tr><td><b>Automatic (used live)</b></td><td>Multilevel queue: Critical uses Priority with aging, Urgent uses SJF, Routine uses FCFS</td><td><code>"AUTO"</code> + <code>auto_decision()</code> (line 113)</td></tr>
+</table>
+<ul>
+  <li><b>Live dispatcher:</b> <code>order_queue()</code> (line 129) and <code>next_request()</code> (line 165), called from <code>app.py → dispatch()</code> (line 450) and <code>queue()</code>.</li>
+  <li><b>Simulation:</b> <code>simulate()</code> (line 174) computes waiting time, turnaround and the Gantt chart; <code>compare()</code> (line 231) runs all six.</li>
+</ul>
+
+<h2>B3. Starvation and aging</h2>
+<p class="file"><b>File:</b> <code>scheduler.py → effective_priority()</code> (line 61)</p>
+<pre>effective priority = priority − (waiting minutes ÷ 10), never below 1</pre>
+<ul>
+  <li><b>Starvation:</b> with pure priority a P5 patient could wait forever while new P1 patients keep arriving.</li>
+  <li><b>Aging:</b> every <code>AGING_INTERVAL_MIN = 10</code> minutes of waiting improves the priority by 1. The same rule is in SQL in <code>v_pending_queue</code>.</li>
+  <li><b>Tests:</b> <code>test_aging_lowers_longest_wait</code> (100), <code>test_effective_priority</code> (122), <code>test_auto_mode_aging_moves_patient_up</code> (158).</li>
+</ul>
+
+<h2>B4. Scheduling metrics and Gantt chart</h2>
+<ul>
+  <li><b>Waiting time</b> = start − arrival · <b>Turnaround</b> = finish − arrival · average wait, <b>average critical-patient wait</b>, max wait, makespan.</li>
+  <li><b>Gantt chart</b> including <b>idle</b> gaps. Shown in the <b>Scheduler Lab</b> tab (all algorithms) and the <b>Dashboard</b> tab (Automatic, plus a bar chart of average and critical wait per algorithm).</li>
+  <li>The Dashboard also shows the <b>real measured wait per priority</b> from the database (SOS sent → unit booked), to compare with the simulation.</li>
+</ul>
+
+<h2>B5. Race condition, critical section and mutual exclusion</h2>
+<p class="file"><b>File:</b> <code>concurrency_lab.py</code> (terminal) and the <b>Deadlock Lab</b> tab (web page)</p>
+<ul>
+  <li><b>Threads:</b> <code>threading.Thread</code> creates 6 concurrent "patients", each with its <b>own</b> DB connection (its own MySQL session).</li>
+  <li><b>Barrier:</b> <code>threading.Barrier(clients)</code> releases all threads at the same instant to force the race.</li>
+  <li><b>Critical section:</b> "read free beds → decide → write free beds − 1". Unprotected in <code>_unsafe_book()</code> → overbooking.</li>
+  <li><b>Mutual exclusion:</b> <code>SELECT ... FOR UPDATE</code> lets only one thread into the critical section for that bed at a time, like a <b>mutex</b>.</li>
+  <li><b>Critical sections in the server too:</b> the connection pool and the login rate-limit counters are shared by all request threads, so each update runs under a <code>threading.Lock</code> (<code>db.py</code>, <code>security.py</code>). A test runs 8 threads × 500 updates and loses none.</li>
+</ul>
+
+<h2>B6. Semaphores</h2>
+<ul>
+  <li><b>Hospital units as a counting semaphore:</b> <code>resources.available_units</code>. <b>wait() / P()</b> = booking does −1 and is refused at 0 (<code>_try_reserve</code>); <b>signal() / V()</b> = release does +1 (<code>_try_release</code>). The row lock makes check-and-decrement <b>atomic</b>.</li>
+  <li><b>A real counting semaphore</b> <span class="new" style="font-size:8pt;background:#16a34a;color:#fff;border-radius:3px;padding:1px 5px">NEW</span>: the connection pool (<code>db.py → ConnectionPool</code>, line 65) uses <code>threading.BoundedSemaphore(DB_POOL_SIZE)</code>. Borrowing a connection is P(); giving it back is V(); with all 10 out, the next thread <b>blocks</b> until one returns (or times out). See B12.</li>
+</ul>
+
+<h2>B7. Deadlock: the four Coffman conditions</h2>
+<table class="keep">
+  <tr><th>Condition</th><th>How EmergencySOS deals with it</th></tr>
+  <tr><td><b>Mutual exclusion</b></td><td>Needed (a bed can hold one patient); kept</td></tr>
+  <tr><td><b>Hold and wait</b></td><td><b>Broken:</b> bed and ambulance are booked in one transaction, all-or-nothing (B9). The pool gives a thread that already holds a connection a fresh one instead of waiting (B12).</td></tr>
+  <tr><td><b>No preemption</b></td><td>InnoDB can preempt: it rolls back a victim transaction (B11)</td></tr>
+  <tr><td><b>Circular wait</b></td><td><b>Broken:</b> fixed global lock order <b>request → hospital → care unit → doctor → ambulance → allocation</b> (resource ordering)</td></tr>
+</table>
+<p>So the project uses <b>prevention</b> (B7), <b>avoidance</b> (Banker's, B10) and <b>detection + recovery</b> (B11): all three textbook strategies.</p>
+
+<h2>B8. Resource allocation</h2>
+<ul>
+  <li>"Needs 1 ICU bed + 1 cardiologist + 1 ambulance" is a process requesting <b>resource instances</b>, as in a resource allocation graph.</li>
+  <li><b>Allocation and release:</b> <code>reserve()</code> (line 199) / <code>release()</code> (line 309); the ambulance comes back on its own after the round trip (<code>return_due_ambulances()</code>, line 351).</li>
+  <li><b>No capacity:</b> the request stays in the ready queue (PENDING) instead of failing; <code>reserve()</code> returns <code>no_capacity</code>.</li>
+  <li><b>Automatic completion:</b> a background thread releases cases whose time is over (<code>complete_due_cases()</code>, line 360) through the same locked transaction as the Release button.</li>
+</ul>
+
+<h2>B9. Ambulances: a second resource, no hold-and-wait <span class="new">NEW</span></h2>
+<ul>
+  <li>Resource type <code>AMBULANCE</code> per hospital (its fleet counter). A case takes its care unit <b>and</b> an ambulance in the same transaction (<code>_try_reserve</code>, step 5); if either is missing it rolls back and the next hospital is tried.</li>
+  <li>A process never holds one resource while waiting for another, so <b>hold and wait cannot happen</b>.</li>
+  <li>The ambulance returns after 2 × drive time; releasing a case early returns an ambulance still on the road. Test: <code>test_bed_and_ambulance_taken_together</code> (790).</li>
+</ul>
+
+<h2>B10. Banker's algorithm: deadlock avoidance <span class="new">NEW</span></h2>
+<p class="file"><b>File:</b> <code>bankers.py</code> · <b>Deadlock Lab</b> tab (matrices, safe sequence, what-if values)</p>
+<ul>
+  <li>Per hospital: processes = its active cases; resource types = ICU bed, ventilator, OT, general bed, ambulance.</li>
+  <li><b>Allocation</b> = what a case holds. <b>Max</b> = that plus what the patient may still need if they get worse (<code>ESCALATION</code>, e.g. cardiac → ventilator + OT; only types the hospital owns). <b>Need</b> = Max − Allocation.</li>
+  <li><b>Safety algorithm:</b> <code>check_safety()</code> (line 58) finds a safe sequence or reports the state unsafe.</li>
+  <li><b>Resource-request algorithm:</b> <code>request_check()</code> (line 90) pretends to admit the new patient and runs the safety check. <code>evaluate()</code> (line 166) is called inside every booking transaction; an unsafe state means rollback and the next hospital.</li>
+  <li>Switch off with <code>BANKERS_CHECK=0</code>. Tests: <code>test_textbook_state_is_safe</code> (876) and the <code>BankersDatabaseTests</code> class (927), e.g. <code>test_unsafe_hospital_is_skipped</code>.</li>
+</ul>
+
+<h2>B11. Deadlock detection: wait-for graph <span class="new">NEW</span></h2>
+<p class="file"><b>File:</b> <code>deadlock_lab.py</code> · <b>Deadlock Lab</b> tab · terminal: <code>python deadlock_lab.py</code></p>
+<ul>
+  <li>Two <b>real MySQL transactions</b> lock two rows in <b>opposite order</b>: T1 holds A and waits for B, T2 holds B and waits for A.</li>
+  <li>Each transaction reports what it holds and waits for; the <b>wait-for graph</b> is rebuilt and searched with <b>DFS</b> for a cycle (<code>find_cycle()</code>, line 40). Result: <b>T1 → T2 → T1</b>.</li>
+  <li>InnoDB detects the same cycle, rolls back a <b>victim</b> (error 1213); the other commits and the victim is <b>retried</b> (recovery).</li>
+  <li>With the global lock order the same two transactions never deadlock: one just waits. Tests: <code>test_opposite_order_deadlocks_and_recovers</code> (1166), <code>test_global_order_never_deadlocks</code> (1177).</li>
+</ul>
+
+<h2>B12. Resource pooling: database connection pool <span class="new">NEW</span></h2>
+<p class="file"><b>File:</b> <code>db.py → ConnectionPool</code> (line 65), <code>borrow()</code> (81), <code>give_back()</code> (139), <code>pooled()</code> (245)</p>
+<ul>
+  <li>Opening a MySQL connection costs a TCP handshake and a login. The pool keeps up to 10 open and lends them out.</li>
+  <li><b>Counting semaphore</b> with 10 permits; idle connections in a <b>LIFO</b> list (warmest reused first); a connection is rolled back before reuse; a broken one is discarded.</li>
+  <li><b>No hold-and-wait inside the pool:</b> a thread that already holds a connection and asks for another gets a fresh one instead of blocking. Otherwise 10 threads each holding one and waiting for a second would deadlock the pool.</li>
+  <li><b>Before / after</b> (<code>python load_test.py --compare-pool</code>, 20 clients × 15 SOS): pool off 2.5 ops/s, 7531 ms average; pool on <b>127.6 ops/s, 110 ms</b>, both consistent. Re-run on your laptop for the report.</li>
+  <li>Tests: <code>test_waiter_gets_the_returned_connection</code> (1243), <code>test_nested_borrow_does_not_deadlock</code> (1264).</li>
+</ul>
+
+<!-- ===================================================================== -->
+<div class="part e">PART E — SECURITY CONCEPTS <span style="font-size:10pt;font-weight:600">NEW</span></div>
+<table>
+  <tr><th>Concept</th><th>In EmergencySOS</th><th>Where</th></tr>
+  <tr><td><b>Password hashing</b></td><td>Salted scrypt hashes, compared in constant time; never stored as text</td><td><code>auth.py</code></td></tr>
+  <tr><td><b>Access control (RBAC)</b></td><td>Roles patient / dispatcher / hospital admin; 401 not logged in, 403 wrong role; an admin may edit only their own hospital</td><td><code>auth.py → require_role</code>, <code>admin_ops.py</code></td></tr>
+  <tr><td><b>Rate limiting (sliding window)</b></td><td>5 failed logins per user + IP in 5 min, or 20 per IP: <b>429</b> + <code>Retry-After</code>, password not even checked while locked; anonymous SOS 10 / min per IP</td><td><code>security.py → SlidingWindow</code> (line 53), <code>app.py → login()</code> (line 237)</td></tr>
+  <tr><td><b>CSRF protection</b></td><td>Secret per-session token in <code>X-CSRF-Token</code> on every POST/PUT/PATCH/DELETE; cross-site <code>Origin</code> refused; cookie <code>HttpOnly</code> + <code>SameSite=Lax</code></td><td><code>security.py → csrf_problem()</code> (line 174), <code>app.py → csrf_guard()</code> (line 124)</td></tr>
+  <tr><td><b>Session fixation</b></td><td>Login starts a new session with a new token</td><td><code>app.py → login()</code></td></tr>
+  <tr><td><b>SQL injection</b></td><td>Parameterized queries everywhere</td><td>all modules</td></tr>
+  <tr><td><b>Least privilege</b></td><td>App MySQL user limited to the project databases; Docker image runs as a non-root user; secrets kept out of Git and the image</td><td><code>setup_mysql.py</code>, <code>Dockerfile</code>, <code>.gitignore</code>, <code>.dockerignore</code></td></tr>
+</table>
+<p>Tests: <code>test_locks_after_five_failures</code> (1563), <code>test_post_without_token_refused</code> (1511) and the rest of <code>CsrfTests</code> / <code>LoginRateLimitTests</code>.</p>
+
+<!-- ===================================================================== -->
+<div class="part c pb">PART C — FILE MAP</div>
+<table>
+  <tr><th>File</th><th>Subject</th><th>What it does</th></tr>
+  <tr><td><code>schema.sql</code></td><td>DBMS</td><td>8 tables, keys, constraints, indexes</td></tr>
+  <tr><td><code>schema_objects.sql</code></td><td>DBMS</td><td>5 views, 5 triggers, 2 stored procedures</td></tr>
+  <tr><td><code>init_db.py</code></td><td>DBMS</td><td>Creates the database, tables and objects (DELIMITER-aware) and loads the sample data</td></tr>
+  <tr><td><code>setup_mysql.py</code></td><td>DBMS</td><td>Creates the databases and a limited-rights MySQL user; <code>--triggers-only</code> allows triggers</td></tr>
+  <tr><td><code>db.py</code></td><td>DBMS + OS</td><td>Connections, <b>connection pool (semaphore)</b>, lock timeout, audit-log helper</td></tr>
+  <tr><td><code>config.py</code></td><td>Both</td><td>Isolation level, lock timeout, retries, aging, Banker's switch, pool size</td></tr>
+  <tr><td><code>transaction_manager.py</code></td><td>DBMS + OS</td><td>ACID transactions, row locks, lock order, rollback, retry, ambulances, auto-completion</td></tr>
+  <tr><td><code>bankers.py</code></td><td>OS</td><td>Banker's algorithm: safety + resource-request check before every admission</td></tr>
+  <tr><td><code>deadlock_lab.py</code></td><td>OS + DBMS</td><td>Deadlock demo: wait-for graph, DFS cycle detection, InnoDB victim, retry</td></tr>
+  <tr><td><code>classifier.py</code></td><td>OS</td><td>Type + severity → priority, resource, specialist, burst time</td></tr>
+  <tr><td><code>scheduler.py</code></td><td>OS</td><td>FCFS, SJF, Priority, aging, MLQ, Automatic, simulation, Gantt chart</td></tr>
+  <tr><td><code>ranking.py</code></td><td>Algorithm</td><td>Scores hospitals (40% road distance, 25% free units, 20% specialist, 15% load); MVCC reads</td></tr>
+  <tr><td><code>routing.py</code></td><td>—</td><td>Road distance and drive time (OSRM), offline estimate fallback</td></tr>
+  <tr><td><code>concurrency_lab.py</code></td><td>Both</td><td>Threads racing for 1 bed: no locks / Python locks / stored procedure</td></tr>
+  <tr><td><code>load_test.py</code></td><td>Both</td><td>Concurrent clients, consistency check, isolation levels, pool off vs on</td></tr>
+  <tr><td><code>db_objects.py</code> · <code>dashboard.py</code></td><td>DBMS</td><td>Serve views/triggers/procedures to the Database tab · aggregate queries for the Dashboard</td></tr>
+  <tr><td><code>auth.py</code> · <code>security.py</code> · <code>admin_ops.py</code></td><td>Security</td><td>Login and roles · rate limiting and CSRF · transactional admin changes</td></tr>
+  <tr><td><code>app.py</code></td><td>—</td><td>Flask REST API, live-update stream (SSE), auto-completion worker</td></tr>
+  <tr><td><code>templates/</code>, <code>static/</code></td><td>—</td><td>Staff console (incl. Dashboard, Deadlock Lab, Database tabs), mobile <code>/sos</code> portal (English / Hindi, alerts), offline map</td></tr>
+  <tr><td><code>Dockerfile</code>, <code>docker-compose.yml</code></td><td>—</td><td>One-command setup: MySQL 8 + app</td></tr>
+  <tr><td><code>test_core.py</code></td><td>Both</td><td><b>133 automated tests</b> that prove each concept works</td></tr>
+</table>
+
+<!-- ===================================================================== -->
+<div class="part d">PART D — WHAT TO SHOW IN THE DEMO</div>
+<ul>
+  <li><b>1. Send SOS</b> from a phone (<code>/sos</code>, optionally in Hindi): the classifier sets priority and burst time. <i>(OS)</i></li>
+  <li><b>2. Queue tab:</b> each patient's queue and algorithm in Automatic mode. <i>(OS scheduling)</i></li>
+  <li><b>3. Dispatch next:</b> one transaction books bed + doctor + ambulance after the Banker's check; the phone plays a chime and vibrates. <i>(DBMS ACID, OS avoidance)</i></li>
+  <li><b>4. Release:</b> the unit comes back. <i>(semaphore signal)</i></li>
+  <li><b>5. Scheduler Lab / Dashboard:</b> compare the algorithms, Gantt chart, starvation and aging, real waits. <i>(OS)</i></li>
+  <li><b>6. Deadlock Lab:</b> Banker's matrices and safe sequence; the wait-for graph turning red; the race: 6 bookings without locks, 1 with locks. <i>(deadlock avoidance, detection, mutual exclusion)</i></li>
+  <li><b>7. Database tab:</b> views, the trigger refusing COMPLETED → PENDING, <code>CALL sp_hospital_report</code>. <i>(DBMS objects)</i></li>
+  <li><b>8. Terminal:</b> <code>python load_test.py --compare-pool</code> (pool before/after) and <code>python load_test.py --clients 40</code> (CONSISTENT: YES at every isolation level).</li>
+  <li><b>9. Security:</b> 5 wrong passwords → locked (429); show the audit log row.</li>
+</ul>
+<div class="note ok">The concurrency race, the deadlock demo and the Banker's algorithm are all in the web page now (Deadlock Lab tab), and also runnable in the terminal.</div>
+
+<p class="small">Line numbers are from the current version of the code; if you edit a file, search for the function name.</p>
+</body>
+</html>
