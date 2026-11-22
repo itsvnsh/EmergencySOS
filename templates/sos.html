@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#dc2626">
+  <title>Send SOS · EmergencySOS</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='vendor/leaflet/leaflet.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='portal.css') }}">
+</head>
+<body>
+<header class="bar">
+  <div class="logo"><span class="cross" aria-hidden="true"></span><b>EmergencySOS</b></div>
+  <div class="who" id="who"><a href="/login">Log in</a></div>
+</header>
+
+<main>
+  <!-- ========== STEP 1: SEND ========== -->
+  <section id="sendView">
+    <p class="call-note">Life in danger right now? Also call <a href="tel:112"><b>112</b></a> (ambulance 108).</p>
+
+    <form id="sosForm" novalidate>
+      <fieldset>
+        <legend>1. What happened?</legend>
+        <div class="types" id="types" role="radiogroup" aria-label="Emergency type"></div>
+      </fieldset>
+
+      <fieldset>
+        <legend>2. How serious is it?</legend>
+        <div class="sev" id="sev" role="radiogroup" aria-label="Severity"></div>
+      </fieldset>
+
+      <fieldset>
+        <legend>3. Where is the patient?</legend>
+        <button type="button" class="btn outline wide" id="geoBtn">&#9737; Use my current location</button>
+        <select id="preset" aria-label="Or choose a place"></select>
+        <div id="pickMap" class="pick-map" aria-label="Tap the map to set the location"></div>
+        <p class="hint" id="locText">Tap the map to move the pin.</p>
+        <input type="hidden" name="latitude" id="lat">
+        <input type="hidden" name="longitude" id="lon">
+      </fieldset>
+
+      <fieldset>
+        <legend>4. Patient</legend>
+        <label>Patient name <input name="patient_name" id="pname" maxlength="80" autocomplete="name" required></label>
+        <label>Phone to call back <input name="phone" id="pphone" type="tel" maxlength="20" autocomplete="tel"></label>
+        <label>What happened? (optional) <input name="description" maxlength="255"></label>
+      </fieldset>
+
+      <p class="error" id="formError" role="alert"></p>
+      <button type="submit" class="btn sos" id="sendBtn">SEND SOS</button>
+    </form>
+
+    <section id="myRequests" class="card hidden">
+      <h2>My requests</h2>
+      <div id="myList"></div>
+    </section>
+  </section>
+
+  <!-- ========== STEP 2: TRACK ========== -->
+  <section id="trackView" class="hidden" aria-live="polite">
+    <div class="card status" id="statusCard"></div>
+    <div id="trackMap" class="track-map hidden"></div>
+    <div class="card" id="detailCard"></div>
+    <button class="btn outline wide" id="newBtn">Send another SOS</button>
+  </section>
+</main>
+
+<div id="toast" class="toast" role="status"></div>
+<script src="{{ url_for('static', filename='vendor/leaflet/leaflet.js') }}"></script>
+<script src="{{ url_for('static', filename='portal.js') }}"></script>
+</body>
+</html>

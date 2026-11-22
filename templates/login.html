@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Log in · EmergencySOS</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="login-page">
+<header class="topbar">
+  <div class="brand">
+    <span class="cross" aria-hidden="true"></span>
+    <div>
+      <h1>EmergencySOS</h1>
+      <p>Right Patient, Right Hospital, Right Bed, Right Now &middot; Team Rescuers</p>
+    </div>
+  </div>
+</header>
+
+<main class="login-wrap">
+  <div class="card login-card">
+    <h2>Staff and patient login</h2>
+    <form id="loginForm" autocomplete="on">
+      <label>Username <input name="username" id="username" required autocomplete="username" autofocus></label>
+      <label>Password <input name="password" id="password" type="password" required autocomplete="current-password"></label>
+      <button type="submit" class="primary big">Log in</button>
+      <p class="form-error" id="loginError" role="alert"></p>
+    </form>
+
+    <a class="sos-link" href="{{ url_for('sos_portal') }}">
+      <b>Emergency? Send an SOS now</b>
+      <span>No login needed &rarr;</span>
+    </a>
+  </div>
+
+  <div class="card login-card">
+    <h2>Demo accounts</h2>
+    <p class="muted small">Click one to fill the form. Passwords are stored hashed in the <code>users</code> table.</p>
+    <div class="demo-users">
+      {% for u in demo %}
+      <button type="button" class="demo-user" data-u="{{ u.username }}" data-p="{{ u.password }}">
+        <b>{{ u.username }}</b> / {{ u.password }}
+        <span>{{ u.role }} &middot; {{ u.name }}</span>
+      </button>
+      {% endfor %}
+    </div>
+    <dl class="kv role-help">
+      <dt>Dispatcher</dt><dd>queue, dispatch, release, map, labs</dd>
+      <dt>Hospital admin</dt><dd>edit beds, equipment, doctors, hospital details, patients</dd>
+      <dt>System admin</dt><dd>all hospitals, add hospitals, manage users, reset data</dd>
+      <dt>Patient</dt><dd>send SOS and follow your own requests</dd>
+    </dl>
+  </div>
+</main>
+
+<script>
+"use strict";
+const form = document.getElementById("loginForm");
+document.querySelectorAll(".demo-user").forEach((b) => b.addEventListener("click", () => {
+  document.getElementById("username").value = b.dataset.u;
+  document.getElementById("password").value = b.dataset.p;
+  document.getElementById("password").focus();
+}));
+form.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const btn = form.querySelector("button[type=submit]");
+  const err = document.getElementById("loginError");
+  btn.disabled = true; err.textContent = "";
+  try {
+    const res = await fetch("/api/login", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(Object.fromEntries(new FormData(form))),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || "Login failed");
+    location.href = data.home;
+  } catch (ex) {
+    err.textContent = ex.message === "Failed to fetch" ? "Server not reachable - is app.py running?" : ex.message;
+  } finally { btn.disabled = false; }
+});
+</script>
+</body>
+</html>

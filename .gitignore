@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# local secrets - never commit these
+db_login.json
+.secret_key
+.env
+
+# editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
