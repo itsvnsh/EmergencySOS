@@ -69,7 +69,7 @@ class ConnectionPool:
         self._permits = threading.BoundedSemaphore(size)
         self._idle = []                       # (connection, time it was returned)
         self._lock = threading.Lock()
-        self._held = threading.local()        # how many pooled connections this thread holds
+        self._held = {}                       # thread id -> pooled connections it holds
         self._db = config.DB_NAME
         self.stats = {"borrowed": 0, "created": 0, "reused": 0, "waited": 0, "wait_ms": 0.0,
                       "timeouts": 0, "discarded": 0, "nested": 0, "in_use": 0, "peak_in_use": 0}
@@ -79,7 +79,8 @@ class ConnectionPool:
             self.stats[key] += n
 
     def borrow(self, autocommit=False):
-        if getattr(self._held, "n", 0) > 0:   # hold-and-wait guard (see module docstring)
+        me = threading.get_ident()
+        if self._held.get(me):                # hold-and-wait guard (see module docstring)
             self._count("nested")
             return get_connection(autocommit=autocommit)
         t0 = time.perf_counter()
@@ -111,8 +112,8 @@ class ConnectionPool:
             self.stats["borrowed"] += 1
             self.stats["in_use"] += 1
             self.stats["peak_in_use"] = max(self.stats["peak_in_use"], self.stats["in_use"])
-        self._held.n = getattr(self._held, "n", 0) + 1
-        return PooledConnection(self, conn)
+            self._held[me] = self._held.get(me, 0) + 1
+        return PooledConnection(self, conn, me)
 
     def _take_idle(self):
         while True:
@@ -135,8 +136,13 @@ class ConnectionPool:
         except Exception:
             pass
 
-    def give_back(self, conn):
-        self._held.n = max(0, getattr(self._held, "n", 1) - 1)
+    def give_back(self, conn, owner):
+        with self._lock:                      # the borrowing thread no longer holds it
+            left = self._held.get(owner, 1) - 1
+            if left > 0:
+                self._held[owner] = left
+            else:
+                self._held.pop(owner, None)
         try:
             ok = bool(conn.open) and self._db == config.DB_NAME
             if ok and conn.server_status & SERVER_STATUS_IN_TRANS:
@@ -176,8 +182,8 @@ class ConnectionPool:
 class PooledConnection:
     """Behaves like a PyMySQL connection; close() returns it to the pool."""
 
-    def __init__(self, owner, conn):
-        self._owner, self._conn = owner, conn
+    def __init__(self, owner, conn, thread_id):
+        self._owner, self._conn, self._thread = owner, conn, thread_id
 
     def __getattr__(self, name):
         return getattr(self._conn, name)
@@ -185,7 +191,7 @@ class PooledConnection:
     def close(self):
         if self._conn is not None:
             conn, self._conn = self._conn, None
-            self._owner.give_back(conn)
+            self._owner.give_back(conn, self._thread)
 
     def __enter__(self):
         return self

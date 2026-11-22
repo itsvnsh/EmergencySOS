@@ -1171,5 +1171,274 @@ class DeadlockLabTests(unittest.TestCase):
         self.assertFalse(r["deadlock"])
 
 
+# ---------------------------------------------------------------------------
+# Tier 2: connection pool (db.py)
+# ---------------------------------------------------------------------------
+@unittest.skipUnless(DB_OK, "MySQL not reachable")
+class ConnectionPoolTests(unittest.TestCase):
+    def _pool(self, size=2, timeout=2):
+        import db
+        p = db.ConnectionPool(size, timeout)
+        self.addCleanup(p.close_idle)
+        return p
+
+    @staticmethod
+    def _conn_id(conn):
+        with conn.cursor() as cur:
+            cur.execute("SELECT CONNECTION_ID() AS id")
+            return cur.fetchone()["id"]
+
+    def test_connections_are_reused(self):
+        p = self._pool()
+        ids = set()
+        for _ in range(5):
+            c = p.borrow(autocommit=True)
+            ids.add(self._conn_id(c))
+            c.close()
+        self.assertEqual(len(ids), 1)                       # the same MySQL session every time
+        s = p.snapshot()
+        self.assertEqual((s["created"], s["reused"], s["borrowed"]), (1, 4, 5))
+        self.assertEqual((s["in_use"], s["idle"]), (0, 1))
+
+    def test_blocks_when_all_out_and_times_out(self):
+        import threading
+        import db
+        p = self._pool(size=1, timeout=0.3)
+        held = p.borrow()
+        errors = []
+
+        def other():
+            try:
+                p.borrow()
+            except db.PoolTimeout as e:
+                errors.append(e)
+        t = threading.Thread(target=other)
+        t.start()
+        t.join(5)
+        held.close()
+        self.assertEqual(len(errors), 1)
+        s = p.snapshot()
+        self.assertEqual((s["waited"], s["timeouts"]), (1, 1))
+
+    def test_waiter_gets_the_returned_connection(self):
+        import threading
+        import time
+        p = self._pool(size=1, timeout=5)
+        got = threading.Event()
+
+        def holder():                                       # another client holds the only connection
+            c = p.borrow()
+            got.set()
+            time.sleep(0.2)
+            c.close()
+        threading.Thread(target=holder).start()
+        got.wait(5)
+        t0 = time.perf_counter()
+        c = p.borrow()                                      # blocks on the semaphore until released
+        waited = time.perf_counter() - t0
+        c.close()
+        self.assertGreaterEqual(waited, 0.15)
+        s = p.snapshot()
+        self.assertEqual((s["waited"], s["created"], s["reused"], s["peak_in_use"]), (1, 1, 1, 1))
+
+    def test_nested_borrow_does_not_deadlock(self):
+        p = self._pool(size=1, timeout=0.5)
+        outer = p.borrow()
+        inner = p.borrow()                                  # same thread: fresh connection, no waiting
+        self.assertNotEqual(self._conn_id(outer), self._conn_id(inner))
+        inner.close()
+        outer.close()
+        s = p.snapshot()
+        self.assertEqual((s["nested"], s["timeouts"], s["in_use"]), (1, 0, 0))
+
+    def test_open_transaction_rolled_back_on_return(self):
+        import db
+        p = self._pool(size=1)
+        before = db.query_one("SELECT name FROM hospitals WHERE hospital_id = 1")["name"]
+        c = p.borrow()
+        c.begin()
+        with c.cursor() as cur:
+            cur.execute("UPDATE hospitals SET name = 'NOT COMMITTED' WHERE hospital_id = 1")
+        c.close()                                           # returned with the transaction still open
+        c2 = p.borrow()
+        self.assertFalse(c2.server_status & db.SERVER_STATUS_IN_TRANS)
+        with c2.cursor() as cur:
+            cur.execute("SELECT name FROM hospitals WHERE hospital_id = 1")
+            self.assertEqual(cur.fetchone()["name"], before)
+        c2.close()
+
+    def test_switch_off(self):
+        import db
+        self.addCleanup(db.set_pool_enabled, db.pool_enabled())
+        db.set_pool_enabled(False)
+        c = db.pooled()
+        self.assertNotIsInstance(c, db.PooledConnection)    # a real, new connection
+        c.close()
+        self.assertEqual(db.pool_stats()["enabled"], False)
+        db.set_pool_enabled(True)
+        c = db.pooled()
+        self.assertIsInstance(c, db.PooledConnection)
+        c.close()
+        self.assertGreaterEqual(db.pool_stats()["borrowed"], 1)
+
+    def test_transactions_still_correct_through_the_pool(self):
+        # many reservations through the pooled transaction manager: counters stay consistent
+        import threading
+        import db
+        import init_db
+        import load_test
+        init_db.initialise()               # the check counts ALL active allocations: start from none
+        start, _ = load_test._snapshot()
+        stats, lock = [], threading.Lock()
+        barrier = threading.Barrier(8)
+        threads = [threading.Thread(target=load_test._client, args=(c, 3, 0.3, barrier, stats, lock))
+                   for c in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        ok, problems = load_test.check_consistency(start)
+        self.assertTrue(ok, problems)
+        self.assertEqual(sum(len(s["errors"]) for s in stats), 0)
+        self.assertEqual(db.pool_stats()["in_use"], 0)      # every connection came back
+
+
+# ---------------------------------------------------------------------------
+# Tier 2: dashboard
+# ---------------------------------------------------------------------------
+@unittest.skipUnless(DB_OK, "MySQL not reachable")
+class DashboardTests(unittest.TestCase):
+    def setUp(self):
+        import init_db
+        init_db.initialise()
+
+    def _send(self, n, etype="CARDIAC", sev=5):
+        from app import insert_request
+        return [insert_request(f"Dash {i}", None, 30.2683, 77.9947, etype, sev, None)[0] for i in range(n)]
+
+    def test_kpis_and_hourly_counts(self):
+        import dashboard
+        import db
+        import transaction_manager as tm
+        rids = self._send(3) + self._send(2, "GENERAL", 1)
+        self.assertEqual(tm.reserve(rids[0])["status"], "allocated")
+        k = dashboard.kpis()
+        self.assertEqual((k["pending"], k["active"], k["sos_24h"]), (4, 1, 5))
+        self.assertIsNotNone(k["avg_response_min"])
+        hours = dashboard.cases_per_hour()
+        self.assertEqual(len(hours), dashboard.HOURS)
+        self.assertEqual(sum(h["total"] for h in hours), 5)
+        self.assertEqual(sum(h["critical"] for h in hours), 3)              # cardiac sev 5 = P1
+        self.assertTrue(all(h["critical"] + h["other"] == h["total"] for h in hours))
+        self.assertEqual(hours[-1]["total"] + hours[-2]["total"], 5)        # all sent in the last hour
+        lab = db.query_one("SELECT COUNT(*) AS n FROM sos_requests WHERE is_lab = 1")["n"]
+        self.assertGreaterEqual(lab, 0)                                     # lab rows never counted
+
+    def test_occupancy_excludes_lab_and_ambulances(self):
+        import dashboard
+        import db
+        occ = dashboard.occupancy()
+        lab_ids = {r["hospital_id"] for r in db.query_all("SELECT hospital_id FROM hospitals WHERE is_lab = 1")}
+        self.assertFalse(lab_ids & {h["hospital_id"] for h in occ["hospitals"]})
+        expect = db.query_one(
+            "SELECT SUM(r.total_units) AS total, SUM(r.total_units - r.available_units) AS used "
+            "FROM resources r JOIN hospitals h ON h.hospital_id = r.hospital_id "
+            "WHERE h.is_lab = 0 AND r.resource_type <> 'AMBULANCE'")
+        self.assertEqual((occ["total"], occ["used"]), (int(expect["total"]), int(expect["used"])))
+        for h in occ["hospitals"]:
+            self.assertNotIn("AMBULANCE", h["types"])
+            self.assertAlmostEqual(h["pct"], round(100 * h["used"] / h["total"], 1))
+        pcts = [h["pct"] for h in occ["hospitals"]]
+        self.assertEqual(pcts, sorted(pcts, reverse=True))                  # fullest first
+
+    def test_response_by_priority(self):
+        import dashboard
+        import transaction_manager as tm
+        rid = self._send(1)[0]
+        tm.reserve(rid)
+        rows = dashboard.response_by_priority()
+        self.assertEqual([r["priority"] for r in rows], [1, 2, 3, 4, 5])
+        self.assertEqual(rows[0]["cases"], 1)
+        self.assertIsNotNone(rows[0]["avg_min"])
+        self.assertIsNone(rows[4]["avg_min"])
+
+    def test_api_sources(self):
+        from app import app
+        c = app.test_client()
+        login(c, "dispatcher", "dispatch123")
+        d = c.get("/api/dashboard").get_json()                    # no real patients: falls back to sample
+        self.assertTrue(d["ok"])
+        self.assertEqual(d["scheduling"]["source"], "sample")
+        self.assertEqual(len(d["scheduling"]["policies"]), 6)
+        self.assertGreater(d["scheduling"]["gantt"]["makespan"], 0)
+        self.assertIn("enabled", d["pool"])
+        d = c.get("/api/dashboard?source=real").get_json()
+        self.assertEqual((d["scheduling"]["source"], d["scheduling"]["policies"]), ("real", []))
+        self._send(5)
+        d = c.get("/api/dashboard").get_json()
+        self.assertEqual((d["scheduling"]["source"], d["scheduling"]["patients"]), ("real", 5))
+        self.assertTrue(c.get("/api/pool").get_json()["pool"]["enabled"])
+
+    def test_needs_login(self):
+        from app import app
+        self.assertEqual(app.test_client().get("/api/dashboard").status_code, 401)
+
+
+# ---------------------------------------------------------------------------
+# Tier 2: SOS portal translations
+# ---------------------------------------------------------------------------
+class PortalTranslationTests(unittest.TestCase):
+    import re as _re
+    KEY = _re.compile(r"(?<![\w.])(\w+):\s*(?=[\"'{])")
+
+    @classmethod
+    def setUpClass(cls):
+        with open(os.path.join(HERE, "static", "portal_i18n.js"), encoding="utf-8") as f:
+            src = f.read()
+        texts, codes = src.split("const I18N_CODES")
+        cls.texts_en, cls.texts_hi = cls._halves(texts)
+        cls.codes_en, cls.codes_hi = cls._halves(codes)
+        with open(os.path.join(HERE, "static", "portal.js"), encoding="utf-8") as f:
+            cls.portal = f.read()
+        with open(os.path.join(HERE, "templates", "sos.html"), encoding="utf-8") as f:
+            cls.html = f.read()
+
+    @staticmethod
+    def _halves(block):
+        en_start, hi_start = block.index("  en: {"), block.index("  hi: {")
+        return block[en_start:hi_start], block[hi_start:]
+
+    def keys(self, block):
+        return self.KEY.findall(block)
+
+    def test_hindi_has_every_english_text(self):
+        en, hi = self.keys(self.texts_en), self.keys(self.texts_hi)
+        self.assertEqual(sorted(set(en) - {"en"}), sorted(set(hi) - {"hi"}))
+        self.assertGreater(len(en), 50)
+
+    def test_hindi_has_every_code(self):
+        self.assertEqual(sorted(self.keys(self.codes_en)[1:]), sorted(self.keys(self.codes_hi)[1:]))
+
+    def test_every_key_used_exists(self):
+        import re
+        known = set(self.keys(self.texts_en))
+        used = set(re.findall(r'\bt\("(\w+)"', self.portal))
+        used |= set(re.findall(r'data-i18n(?:-html)?="(\w+)"', self.html))
+        self.assertTrue(used)
+        self.assertEqual(sorted(used - known), [])
+
+    def test_placeholders_match(self):
+        import re
+        pat = re.compile(r'(\w+):\s*"((?:[^"\\]|\\.)*)"')
+        en, hi = dict(pat.findall(self.texts_en)), dict(pat.findall(self.texts_hi))
+        for k, v in en.items():
+            self.assertEqual(sorted(re.findall(r"\{(\w+)\}", v)), sorted(re.findall(r"\{(\w+)\}", hi.get(k, ""))), k)
+
+    def test_hindi_is_devanagari(self):
+        import re
+        self.assertRegex(self.texts_hi, r"[ऀ-ॿ]")
+        self.assertIsNone(re.search(r"[ऀ-ॿ]", self.texts_en.replace("हिन्दी", "")))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

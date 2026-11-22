@@ -11,7 +11,7 @@ EmergencySOS routes an emergency (SOS) request to the most suitable hospital bas
 
 Hospital names are real Dehradun-region hospitals with approximate locations. **All bed, equipment and doctor data is simulated.**
 
-**Status: Phase III, 100% complete, plus the Tier 1 additions.** Login with roles, a hospital admin panel, road-distance routing with a live map, automatic case completion with live push updates, a mobile SOS portal, load testing and an ER diagram (Phase III); **ambulances as a second locked resource, Banker's algorithm on every admission, a live deadlock-detection lab, and database views, triggers and stored procedures** (Tier 1). 94 automated tests (see section 7).
+**Status: Phase III, 100% complete, plus the Tier 1 and Tier 2 additions.** Login with roles, a hospital admin panel, road-distance routing with a live map, automatic case completion with live push updates, a mobile SOS portal, load testing and an ER diagram (Phase III); **ambulances as a second locked resource, Banker's algorithm on every admission, a live deadlock-detection lab, and database views, triggers and stored procedures** (Tier 1); **a Dashboard tab with charts, a database connection pool (51x the load-test throughput) and a Hindi + alerting SOS portal** (Tier 2). 111 automated tests (see section 7).
 
 ---
 
@@ -24,7 +24,8 @@ EmergencySOS/
 ├── setup_mysql.py          # one-time: creates databases + an app MySQL user (no root needed after)
 ├── init_db.py              # creates the database and loads simulated data
 ├── config.py               # DB login, isolation level, aging interval, ranking weights
-├── db.py                   # PyMySQL connection helpers + audit-log helper + change id for live updates
+├── db.py                   # connection pool (semaphore) + PyMySQL helpers + audit-log helper + change id
+├── dashboard.py            # numbers for the Dashboard tab (KPIs, occupancy, cases/hour, waits)
 ├── auth.py                 # login, password hashing, roles, @require_role, per-hospital access
 ├── admin_ops.py            # admin changes: hospitals, doctors, patients, users (all transactional)
 ├── routing.py              # road distance + travel time (OSRM), offline estimate fallback
@@ -36,7 +37,7 @@ EmergencySOS/
 ├── deadlock_lab.py         # deadlock demo: wait-for graph, cycle detection (DFS), InnoDB victim, retry
 ├── db_objects.py           # serves the views / triggers / procedures to the Database tab
 ├── concurrency_lab.py      # race demo: N clients vs 1 ICU bed, no locks / Python locks / stored procedure
-├── load_test.py            # many concurrent clients + consistency check + isolation-level comparison
+├── load_test.py            # concurrent clients + consistency check + isolation levels + pool off/on
 ├── audit_log.py            # prints the latest audit-log events (terminal)
 ├── app.py                  # Flask REST API, login, live-update stream, auto-completion worker
 ├── templates/
@@ -46,13 +47,15 @@ EmergencySOS/
 ├── static/
 │   ├── style.css, app.js       # console
 │   ├── labs.js                 # console: Deadlock Lab and Database tabs
+│   ├── dashboard.js            # console: Dashboard tab (charts in plain HTML/CSS, no library)
 │   ├── portal.css, portal.js   # mobile portal
+│   ├── portal_i18n.js          # mobile portal: English / Hindi text
 │   └── vendor/leaflet/         # map library, bundled so it works without a CDN
 ├── docs/
 │   ├── er_diagram.png / .svg   # ER diagram, generated from the live database
 │   └── make_er_diagram.py      # re-draws it: python docs/make_er_diagram.py
 ├── sample_workload.json    # the 12-request workload used in the report
-├── test_core.py            # automated tests (94 tests)
+├── test_core.py            # automated tests (111 tests)
 └── requirements.txt
 ```
 
@@ -176,6 +179,7 @@ Back-end tools (run in the terminal):
 python scheduler.py         # prints the scheduler comparison for the sample workload
 python concurrency_lab.py   # runs the race unlocked and locked
 python load_test.py         # 20 concurrent clients x 15 SOS, for each isolation level, + consistency check
+python load_test.py --compare-pool   # the same load with the connection pool off, then on
 python audit_log.py         # latest 40 audit-log events (python audit_log.py 100 for more)
 python docs/make_er_diagram.py   # re-draws the ER diagram from the database (needs Graphviz)
 ```
@@ -219,6 +223,12 @@ Start with `CASE_TIME_SCALE=0.1` so automatic completion is visible within a min
 17. **Deadlock detection** (*Deadlock Lab*): **Opposite lock order** runs two real MySQL transactions that each hold one row and wait for the other. The wait-for graph turns red (**cycle T1 → T2 → T1**), InnoDB picks a victim (error 1213), the other commits and the victim is retried. **Global lock order** runs the same two transactions in the project's lock order: one just waits, no cycle. Terminal version: `python deadlock_lab.py`.
 18. **Race through a stored procedure** (*Deadlock Lab*): **No locks** gives 6 bookings for 1 bed; **Locked (stored procedure)** books exactly once with the same lock order, written entirely in SQL (`sp_allocate_unit`).
 19. **Database tab**: the 5 views (click **Show rows**; open **SQL** to show the code), **Try an illegal status change** (the trigger refuses `COMPLETED -> PENDING` and the history table shows every legal step), **CALL sp_hospital_report** (one call, two result sets), and the status history of any request (written only by triggers).
+
+**Tier 2 additions (demo polish)**
+
+20. **Dashboard tab**: live KPI tiles (waiting, active, SOS in 24 h, average real response time, bed occupancy), then four charts: average and critical-patient wait for each scheduling algorithm, bed occupancy per hospital (fullest first, ambulances out next to it), SOS per hour over the last 24 h (critical in orange) and the **real** measured wait per priority (P1 should be lowest). Below: the Gantt chart of the Automatic scheduler and the connection-pool counters. Hover any bar for its numbers. Send an SOS on a phone and the dashboard updates by itself.
+21. **Connection pool (terminal)**: `python load_test.py --compare-pool`. Same 20 clients × 15 SOS with the pool off (a new MySQL connection for every query), then on. Show the throughput jump and that both runs stay **CONSISTENT: YES**.
+22. **Phone alert + Hindi**: on a phone open `/sos`, tap **हिन्दी**, send an SOS (everything, including the status page, is in Hindi). Dispatch it from the console: the phone **plays a chime, vibrates and flashes** *अस्पताल तय हो गया* the moment the hospital is booked (and shows a notification if the page is in the background and notifications were allowed). **Test** plays the alert without dispatching.
 
 ## 5. Key design decisions
 
@@ -290,6 +300,30 @@ Start with `CASE_TIME_SCALE=0.1` so automatic completion is visible within a min
 
 All levels stay consistent because the safety comes from `SELECT ... FOR UPDATE` plus the locked re-check, not from the isolation level. REPEATABLE READ (InnoDB default) is kept. With 40 clients about 1 in 6 bookings hit a **stale ranking** (the hospital filled up between ranking and commit) and were correctly booked at the next hospital. Numbers depend on the machine, so re-run on yours for the report.
 
+**Connection pool** (`db.py`, Tier 2)
+- Opening a MySQL connection costs a TCP handshake and a login (about 30 ms here, much more when 20 clients connect at once). The pool keeps up to `DB_POOL_SIZE` (10) open connections and lends them out: `db.pooled()` borrows one, `close()` gives it back.
+- OS view: a **counting semaphore** with 10 permits guards the connections. A thread that finds none free **blocks** on the semaphore until one comes back (or gives up after `DB_POOL_TIMEOUT_SEC`). Idle connections sit in a LIFO list, so the warmest one is reused; one idle for 30 s is pinged first, a broken one is thrown away.
+- A connection is cleaned before it goes back: an open transaction is rolled back, so the next user never inherits half a transaction or its row locks.
+- **No hold-and-wait inside the pool**: a thread that already holds a pooled connection and asks for a second one gets a fresh connection instead of waiting. Otherwise 10 threads each holding one and waiting for another would deadlock the pool itself.
+- The labs (race, deadlock) still open their own connections on purpose: each simulated client must be a separate MySQL session. `DB_POOL=0` switches the pool off.
+
+Before/after, 20 clients × 15 SOS, REPEATABLE READ, on the development laptop (`python load_test.py --compare-pool`):
+
+| Pool | ops/s | avg ms | p95 ms | MySQL connections | consistent |
+|---|---|---|---|---|---|
+| off (connect per query) | 2.5 | 7531 | 12862 | one per query | YES |
+| on (size 10) | 127.6 | 110 | 479 | 10 | YES |
+
+About 51x the throughput: 2357 borrows were served by 10 connections (99.6% reused). Re-run on your machine for the report.
+
+**Dashboard** (`dashboard.py`, `static/dashboard.js`, Tier 2)
+- A handful of aggregate SQL queries (`COUNT`, `AVG(TIMESTAMPDIFF(...))`, `GROUP BY` hour); lab rows never counted. The scheduling chart reuses the Scheduler Lab simulation on the patients in the system, or the sample workload when there are fewer than 5.
+- Charts are plain HTML/CSS bars, so they work offline and on a phone; colours are a colour-blind-safe pair (blue/orange), and every value is also in text.
+
+**SOS portal: alerts and Hindi** (`static/portal.js`, `static/portal_i18n.js`, Tier 2)
+- The portal already gets a live push (Server-Sent Events) on every change. When it sees its own request go `PENDING → ALLOCATED` it plays a chime made with the Web Audio API (no sound file), vibrates (`navigator.vibrate`), flashes the card, changes the tab title and, if the page is in the background and allowed, shows a notification. Browsers only allow sound after a tap, so the SEND tap unlocks it. Reopening an already-assigned request does not alert again.
+- Every text on `/sos` comes from one table with English and Hindi. A test checks both languages have the same keys and placeholders.
+
 **Race demo** (`concurrency_lab.py`)
 - The unlocked version is a plain read → 50 ms pause → write, with no transaction. That is a classic lost update.
 - The locked version calls the real `transaction_manager.reserve()`.
@@ -335,6 +369,8 @@ Who can call it: \* anyone, **P** patient, **D** dispatcher, **A** hospital admi
 | GET | `/api/db/objects` | D, A | views, triggers, procedures with their SQL and whether they are installed |
 | GET | `/api/db/view/<name>` · `/api/db/report/<hospital_id>` | D, A | rows of a view · `CALL sp_hospital_report` |
 | GET | `/api/db/history/<request_id>` · POST `/api/db/trigger-demo` | D, A | trigger-written status history · state-machine trigger demo |
+| GET | `/api/dashboard?source=auto\|real\|sample` | D, A | KPIs, occupancy, cases per hour, real wait per priority, scheduling comparison, pool counters |
+| GET | `/api/pool` | D, A | connection-pool counters |
 
 ---
 
@@ -358,6 +394,12 @@ Who can call it: \* anyone, **P** patient, **D** dispatcher, **A** hospital admi
 - [x] deadlock detection lab on real MySQL locks: wait-for graph, DFS cycle detection, InnoDB victim, retry; vs the global lock order
 - [x] 5 views, 5 triggers, 2 stored procedures; the race lab can book through the stored procedure; Database tab
 - [x] 32 new tests (94 in total)
+
+**Tier 2 (done):**
+- [x] Dashboard tab: KPIs, wait per scheduling algorithm, bed occupancy, SOS per hour, real wait per priority, Gantt chart, pool counters
+- [x] connection pool (counting semaphore, rollback on return, hold-and-wait guard) with before/after load-test numbers
+- [x] SOS portal: sound + vibration + notification when a hospital is assigned; English / Hindi switch
+- [x] 17 new tests (111 in total)
 
 ## 8. Troubleshooting
 
