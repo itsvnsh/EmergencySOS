@@ -35,14 +35,18 @@ CREATE TABLE hospitals (
 ) ENGINE = InnoDB;
 
 -- ------------------------------------------------------------
--- 2. Resources = shared, countable units (beds, ventilators, OTs)
---    In OS terms these are the shared resources that processes
---    (SOS requests) compete for.
+-- 2. Resources = shared, countable units (beds, ventilators, OTs,
+--    ambulances). In OS terms these are the shared resources that
+--    processes (SOS requests) compete for; available_units works
+--    like a counting semaphore.
+--    AMBULANCE is the hospital's fleet. Every case needs a unit of
+--    its required type AND an ambulance, taken in ONE transaction
+--    (all-or-nothing, so no hold-and-wait).
 -- ------------------------------------------------------------
 CREATE TABLE resources (
     resource_id      INT AUTO_INCREMENT PRIMARY KEY,
     hospital_id      INT NOT NULL,
-    resource_type    ENUM('ICU_BED','VENTILATOR','OPERATION_THEATRE','GENERAL_BED') NOT NULL,
+    resource_type    ENUM('ICU_BED','VENTILATOR','OPERATION_THEATRE','GENERAL_BED','AMBULANCE') NOT NULL,
     total_units      INT NOT NULL,
     available_units  INT NOT NULL,
     updated_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -160,16 +164,24 @@ CREATE TABLE allocations (
     expected_end_at TIMESTAMP NULL,              -- when the case is due to finish (automatic completion)
     released_at    TIMESTAMP NULL,
     release_mode   ENUM('MANUAL','AUTO') NULL,
+    -- the ambulance (fleet counter of the same hospital) that brings the patient in.
+    -- It is free again after the round trip (ambulance_due_at), long before the bed.
+    ambulance_resource_id INT NULL,
+    ambulance_due_at      TIMESTAMP NULL,
+    ambulance_returned_at TIMESTAMP NULL,
     CONSTRAINT fk_alloc_request  FOREIGN KEY (request_id)  REFERENCES sos_requests(request_id) ON DELETE CASCADE,
     CONSTRAINT fk_alloc_hospital FOREIGN KEY (hospital_id) REFERENCES hospitals(hospital_id)   ON DELETE CASCADE,
     CONSTRAINT fk_alloc_resource FOREIGN KEY (resource_id) REFERENCES resources(resource_id)   ON DELETE CASCADE,
     CONSTRAINT fk_alloc_doctor   FOREIGN KEY (doctor_id)   REFERENCES doctors(doctor_id)       ON DELETE SET NULL,
+    CONSTRAINT fk_alloc_ambulance FOREIGN KEY (ambulance_resource_id) REFERENCES resources(resource_id) ON DELETE CASCADE,
     CONSTRAINT chk_alloc_dist CHECK (distance_km IS NULL OR distance_km >= 0)
 ) ENGINE = InnoDB;
 
 CREATE INDEX idx_alloc_status ON allocations (status, hospital_id);
 -- the auto-completion worker looks for ACTIVE allocations whose time is up
 CREATE INDEX idx_alloc_due ON allocations (status, expected_end_at);
+-- the same worker brings ambulances back once their round trip is over
+CREATE INDEX idx_alloc_amb_due ON allocations (ambulance_returned_at, ambulance_due_at);
 
 -- ------------------------------------------------------------
 -- 6. Audit log - every important event, written inside the same

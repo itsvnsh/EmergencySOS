@@ -19,7 +19,9 @@ from transaction_manager import TxError, _begin, _with_retry
 
 SPECIALIZATIONS = ["CARDIOLOGIST", "NEUROLOGIST", "TRAUMA_SURGEON", "PULMONOLOGIST",
                    "BURN_SPECIALIST", "GYNECOLOGIST", "GENERAL_PHYSICIAN"]
-RESOURCE_TYPES = ["ICU_BED", "VENTILATOR", "OPERATION_THEATRE", "GENERAL_BED"]
+RESOURCE_TYPES = ["ICU_BED", "VENTILATOR", "OPERATION_THEATRE", "GENERAL_BED", "AMBULANCE"]
+# what a patient can be admitted to (an ambulance only brings them in)
+CARE_TYPES = RESOURCE_TYPES[:4]
 
 
 # ---------------------------------------------------------------------------

@@ -50,6 +50,9 @@ def reset_lab(beds=1):
                         "WHERE resource_id = %s", (beds, beds, lab["resource_id"]))
             cur.execute("UPDATE doctors SET current_cases = 0 WHERE hospital_id = %s",
                         (lab["hospital_id"],))
+            # every ambulance back at base, so only the bed is contested
+            cur.execute("UPDATE resources SET available_units = total_units "
+                        "WHERE hospital_id = %s AND resource_type = 'AMBULANCE'", (lab["hospital_id"],))
         conn.commit()
     finally:
         conn.close()

@@ -8,16 +8,21 @@ Every reservation is ONE transaction:
       1. SELECT ... FROM sos_requests WHERE id = ?  FOR UPDATE   (lock the request)
       2. SELECT ... FROM resources    WHERE id = ?  FOR UPDATE   (lock the unit counter)
       3. SELECT ... FROM doctors      WHERE ...     FOR UPDATE   (lock one doctor)
-      4. re-check: request still PENDING? unit still free?
-      5. UPDATE counters, mark request ALLOCATED, INSERT allocation + audit row
+      4. SELECT ... FROM resources    WHERE AMBULANCE FOR UPDATE   (lock the ambulance fleet)
+      5. re-check: request still PENDING? unit still free? ambulance free?
+      6. UPDATE counters, mark request ALLOCATED, INSERT allocation + audit row
     COMMIT                       (or ROLLBACK if any check fails)
+
+Two resources, all-or-nothing: the bed AND the ambulance are taken in the same
+transaction, or neither is. A case never holds one while waiting for the other,
+so the "hold and wait" condition for deadlock cannot occur.
 
 Mutual exclusion: SELECT ... FOR UPDATE takes an exclusive row lock, so two
 transactions can never both read "1 bed free" and both take it.
 
 Deadlock avoidance: every transaction locks rows in the SAME order
-(request -> resource -> doctor -> allocation). With one global order a
-circular wait cannot form.
+(request -> care unit -> doctor -> ambulance -> allocation). With one global
+order a circular wait cannot form (deadlock_lab.py shows what happens without it).
 
 Stale ranking: the ranking is computed from a snapshot BEFORE the transaction.
 If the chosen hospital filled up meanwhile, the locked re-check fails, we
@@ -37,6 +42,9 @@ from ranking import rank_for_request
 
 class TxError(Exception):
     pass
+
+
+DEFAULT_TRAVEL_MIN = 10      # used when a candidate has no travel time (e.g. the lab hospital)
 
 
 def _begin(conn):
@@ -113,9 +121,20 @@ def _try_reserve(conn, request_id, cand, delay_ms=0):
             if doctor:
                 break
 
-        # (4) all checks passed -> update everything inside the same transaction
+        # (4) lock the hospital's ambulance fleet: the patient must be brought in
+        cur.execute("SELECT resource_id, available_units FROM resources "
+                    "WHERE hospital_id = %s AND resource_type = 'AMBULANCE' FOR UPDATE",
+                    (cand["hospital_id"],))
+        amb = cur.fetchone()
+        if not amb or amb["available_units"] <= 0:
+            conn.rollback()                # the bed is not kept either: all-or-nothing
+            return {"result": "no_ambulance"}
+
+        # (5) all checks passed -> update everything inside the same transaction
         cur.execute("UPDATE resources SET available_units = available_units - 1 "
                     "WHERE resource_id = %s", (cand["resource_id"],))
+        cur.execute("UPDATE resources SET available_units = available_units - 1 "
+                    "WHERE resource_id = %s", (amb["resource_id"],))
         if doctor:
             cur.execute("UPDATE doctors SET current_cases = current_cases + 1 "
                         "WHERE doctor_id = %s", (doctor["doctor_id"],))
@@ -123,22 +142,34 @@ def _try_reserve(conn, request_id, cand, delay_ms=0):
                     (request_id,))
         # expected end of the case = handling time x CASE_TIME_SCALE (used by auto-completion)
         case_sec = max(1, int(round(req["est_handling_min"] * 60 * config.CASE_TIME_SCALE)))
+        amb_sec = min(case_sec, ambulance_round_trip_sec(cand.get("travel_min")))
         cur.execute("INSERT INTO allocations (request_id, hospital_id, resource_id, doctor_id, "
-                    "score, distance_km, travel_min, distance_source, expected_end_at) "
-                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s, NOW() + INTERVAL %s SECOND)",
+                    "score, distance_km, travel_min, distance_source, expected_end_at, "
+                    "ambulance_resource_id, ambulance_due_at) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s, NOW() + INTERVAL %s SECOND, "
+                    "%s, NOW() + INTERVAL %s SECOND)",
                     (request_id, cand["hospital_id"], cand["resource_id"],
                      doctor["doctor_id"] if doctor else None,
                      cand.get("score"), cand.get("distance_km"), cand.get("travel_min"),
-                     cand.get("distance_source"), case_sec))
+                     cand.get("distance_source"), case_sec, amb["resource_id"], amb_sec))
         allocation_id = cur.lastrowid
         doc_txt = f"{doctor['name']} ({doctor['specialization']})" if doctor else "no doctor free"
         db.log_event(cur, "ALLOCATED",
                      f"Request #{request_id} -> {cand.get('name', cand['hospital_id'])}, "
-                     f"unit #{cand['resource_id']}, {doc_txt}",
+                     f"unit #{cand['resource_id']}, {doc_txt}, ambulance sent "
+                     f"({amb['available_units'] - 1} left)",
                      request_id, cand["hospital_id"])
     conn.commit()
     return {"result": "allocated", "allocation_id": allocation_id,
-            "doctor": doctor, "units_before": res["available_units"]}
+            "doctor": doctor, "units_before": res["available_units"],
+            "ambulance": {"resource_id": amb["resource_id"], "left": amb["available_units"] - 1,
+                          "back_in_sec": amb_sec}}
+
+
+def ambulance_round_trip_sec(travel_min):
+    """Hospital -> patient -> hospital takes about twice the one-way drive (scaled for demos)."""
+    one_way = float(travel_min) if travel_min is not None else DEFAULT_TRAVEL_MIN
+    return max(1, int(round(2 * one_way * 60 * config.CASE_TIME_SCALE)))
 
 
 def reserve(request_id, ranked=None, delay_ms=0):
@@ -166,12 +197,12 @@ def reserve(request_id, ranked=None, delay_ms=0):
         if outcome["result"] == "allocated":
             return {"status": "allocated", "request_id": request_id,
                     "allocation_id": outcome["allocation_id"],
-                    "hospital": cand, "doctor": outcome["doctor"],
+                    "hospital": cand, "doctor": outcome["doctor"], "ambulance": outcome["ambulance"],
                     "fallbacks": len(attempts) - 1, "attempts": attempts}
         if outcome["result"] in ("not_pending", "not_found"):
             return {"status": outcome["result"], "request_id": request_id, "attempts": attempts,
                     "message": "Request was handled by another dispatcher"}
-        # no_unit (stale ranking) or lock_error -> log it and try the next hospital
+        # no_unit (stale ranking), no_ambulance or lock_error -> log it and try the next hospital
         db.execute("INSERT INTO audit_log (event_type, request_id, hospital_id, details) "
                    "VALUES ('ROLLBACK', %s, %s, %s)",
                    (request_id, cand["hospital_id"],
@@ -191,8 +222,8 @@ def reserve(request_id, ranked=None, delay_ms=0):
 # ---------------------------------------------------------------------------
 def _try_release(conn, allocation_id, mode="MANUAL"):
     with conn.cursor() as cur:
-        cur.execute("SELECT request_id, resource_id, doctor_id FROM allocations "
-                    "WHERE allocation_id = %s", (allocation_id,))
+        cur.execute("SELECT request_id, resource_id, doctor_id, ambulance_resource_id "
+                    "FROM allocations WHERE allocation_id = %s", (allocation_id,))
         ids = cur.fetchone()
     conn.commit()            # end the read-only lookup before starting the real transaction
     if not ids:
@@ -200,7 +231,7 @@ def _try_release(conn, allocation_id, mode="MANUAL"):
 
     _begin(conn)
     with conn.cursor() as cur:
-        # same global lock order as reserve(): request -> resource -> doctor -> allocation
+        # same global lock order as reserve(): request -> unit -> doctor -> ambulance -> allocation
         cur.execute("SELECT status FROM sos_requests WHERE request_id = %s FOR UPDATE",
                     (ids["request_id"],))
         cur.execute("SELECT available_units, total_units FROM resources "
@@ -208,8 +239,11 @@ def _try_release(conn, allocation_id, mode="MANUAL"):
         if ids["doctor_id"]:
             cur.execute("SELECT current_cases FROM doctors WHERE doctor_id = %s FOR UPDATE",
                         (ids["doctor_id"],))
-        cur.execute("SELECT status, hospital_id FROM allocations WHERE allocation_id = %s FOR UPDATE",
-                    (allocation_id,))
+        if ids["ambulance_resource_id"]:
+            cur.execute("SELECT available_units FROM resources WHERE resource_id = %s FOR UPDATE",
+                        (ids["ambulance_resource_id"],))
+        cur.execute("SELECT status, hospital_id, ambulance_returned_at FROM allocations "
+                    "WHERE allocation_id = %s FOR UPDATE", (allocation_id,))
         alloc = cur.fetchone()
         if alloc["status"] != "ACTIVE":
             conn.rollback()
@@ -217,6 +251,12 @@ def _try_release(conn, allocation_id, mode="MANUAL"):
 
         cur.execute("UPDATE resources SET available_units = LEAST(total_units, available_units + 1) "
                     "WHERE resource_id = %s", (ids["resource_id"],))
+        # case finished before the ambulance's round trip was over: it is free now too
+        if ids["ambulance_resource_id"] and alloc["ambulance_returned_at"] is None:
+            cur.execute("UPDATE resources SET available_units = LEAST(total_units, available_units + 1) "
+                        "WHERE resource_id = %s", (ids["ambulance_resource_id"],))
+            cur.execute("UPDATE allocations SET ambulance_returned_at = NOW() WHERE allocation_id = %s",
+                        (allocation_id,))
         if ids["doctor_id"]:
             cur.execute("UPDATE doctors SET current_cases = GREATEST(0, current_cases - 1) "
                         "WHERE doctor_id = %s", (ids["doctor_id"],))
@@ -238,6 +278,53 @@ def _try_release(conn, allocation_id, mode="MANUAL"):
 
 def release(allocation_id, mode="MANUAL"):
     return _with_retry(_try_release, allocation_id, mode)
+
+
+# ---------------------------------------------------------------------------
+# Ambulance back at base (round trip over; the bed stays taken)
+# ---------------------------------------------------------------------------
+def _try_return_ambulance(conn, allocation_id):
+    with conn.cursor() as cur:
+        cur.execute("SELECT ambulance_resource_id FROM allocations WHERE allocation_id = %s",
+                    (allocation_id,))
+        ids = cur.fetchone()
+    conn.commit()
+    if not ids or not ids["ambulance_resource_id"]:
+        return {"result": "not_found"}
+
+    _begin(conn)
+    with conn.cursor() as cur:
+        # a subset of the global lock order: ambulance -> allocation
+        cur.execute("SELECT available_units FROM resources WHERE resource_id = %s FOR UPDATE",
+                    (ids["ambulance_resource_id"],))
+        cur.execute("SELECT request_id, hospital_id, ambulance_returned_at FROM allocations "
+                    "WHERE allocation_id = %s FOR UPDATE", (allocation_id,))
+        alloc = cur.fetchone()
+        if alloc["ambulance_returned_at"] is not None:
+            conn.rollback()
+            return {"result": "already_returned"}
+        cur.execute("UPDATE resources SET available_units = LEAST(total_units, available_units + 1) "
+                    "WHERE resource_id = %s", (ids["ambulance_resource_id"],))
+        cur.execute("UPDATE allocations SET ambulance_returned_at = NOW() WHERE allocation_id = %s",
+                    (allocation_id,))
+        db.log_event(cur, "AMBULANCE_BACK",
+                     f"Allocation #{allocation_id}: patient delivered, ambulance back at base",
+                     alloc["request_id"], alloc["hospital_id"])
+    conn.commit()
+    return {"result": "returned"}
+
+
+def return_ambulance(allocation_id):
+    return _with_retry(_try_return_ambulance, allocation_id)
+
+
+def return_due_ambulances():
+    """Free every ambulance whose round trip is over. Returns the allocation ids."""
+    due = db.query_all("SELECT allocation_id FROM allocations WHERE ambulance_returned_at IS NULL "
+                       "AND ambulance_resource_id IS NOT NULL AND ambulance_due_at <= NOW() "
+                       "ORDER BY ambulance_due_at LIMIT 50")
+    return [r["allocation_id"] for r in due
+            if return_ambulance(r["allocation_id"]).get("result") == "returned"]
 
 
 def complete_due_cases():

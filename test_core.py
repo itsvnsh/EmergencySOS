@@ -749,5 +749,95 @@ class LiveTests(unittest.TestCase):
         self.assertTrue(r["consistent"], r["problems"])
 
 
+# ---------------------------------------------------------------------------
+# Ambulances: a second resource taken in the same transaction as the bed
+# ---------------------------------------------------------------------------
+@unittest.skipUnless(DB_OK, "MySQL not reachable")
+class AmbulanceTests(unittest.TestCase):
+    def setUp(self):
+        import init_db
+        init_db.initialise()
+
+    def _fleet(self, hospital_id):
+        import db
+        return db.query_one("SELECT resource_id, available_units, total_units FROM resources "
+                            "WHERE hospital_id = %s AND resource_type = 'AMBULANCE'", (hospital_id,))
+
+    def _request(self):
+        from app import insert_request
+        return insert_request("Amb Test", None, 30.2683, 77.9947, "CARDIAC", 5, None)[0]
+
+    def test_bed_and_ambulance_taken_together(self):
+        import transaction_manager as tm
+        rid = self._request()
+        import db, ranking
+        best = ranking.rank_for_request(db.query_one("SELECT * FROM sos_requests WHERE request_id=%s", (rid,)))[0]
+        before = self._fleet(best["hospital_id"])
+        out = tm.reserve(rid)
+        self.assertEqual(out["status"], "allocated")
+        self.assertEqual(out["hospital"]["hospital_id"], best["hospital_id"])
+        self.assertEqual(self._fleet(best["hospital_id"])["available_units"], before["available_units"] - 1)
+        self.assertEqual(out["ambulance"]["resource_id"], before["resource_id"])
+
+    def test_no_free_ambulance_skips_hospital_and_keeps_bed(self):
+        import db
+        import ranking
+        import transaction_manager as tm
+        rid = self._request()
+        req = db.query_one("SELECT * FROM sos_requests WHERE request_id=%s", (rid,))
+        ranked = ranking.rank_for_request(req)                 # snapshot while ambulances are free
+        best = ranked[0]
+        db.execute("UPDATE resources SET available_units = 0 WHERE hospital_id = %s "
+                   "AND resource_type = 'AMBULANCE'", (best["hospital_id"],))
+        beds = db.query_one("SELECT available_units FROM resources WHERE resource_id=%s", (best["resource_id"],))
+        out = tm.reserve(rid, ranked=ranked)
+        self.assertEqual(out["attempts"][0]["result"], "no_ambulance")
+        self.assertEqual(out["status"], "allocated")
+        self.assertNotEqual(out["hospital"]["hospital_id"], best["hospital_id"])
+        # all-or-nothing: the bed of the first hospital was not kept
+        self.assertEqual(db.query_one("SELECT available_units FROM resources WHERE resource_id=%s",
+                                      (best["resource_id"],))["available_units"], beds["available_units"])
+        # and a fresh ranking leaves that hospital out completely
+        self.assertNotIn(best["hospital_id"], [c["hospital_id"] for c in ranking.rank_for_request(req)])
+
+    def test_ambulance_returns_before_the_bed(self):
+        import db
+        import transaction_manager as tm
+        out = tm.reserve(self._request())
+        aid, hid = out["allocation_id"], out["hospital"]["hospital_id"]
+        before = self._fleet(hid)["available_units"]
+        db.execute("UPDATE allocations SET ambulance_due_at = NOW() - INTERVAL 1 SECOND WHERE allocation_id=%s", (aid,))
+        self.assertEqual(tm.return_due_ambulances(), [aid])
+        self.assertEqual(tm.return_due_ambulances(), [])                     # only once
+        self.assertEqual(self._fleet(hid)["available_units"], before + 1)
+        row = db.query_one("SELECT status, ambulance_returned_at FROM allocations WHERE allocation_id=%s", (aid,))
+        self.assertEqual(row["status"], "ACTIVE")                              # the bed is still taken
+        self.assertIsNotNone(row["ambulance_returned_at"])
+        tm.release(aid)                                                        # must not return it twice
+        self.assertEqual(self._fleet(hid)["available_units"], before + 1)
+
+    def test_release_brings_ambulance_back_if_still_out(self):
+        import transaction_manager as tm
+        out = tm.reserve(self._request())
+        hid = out["hospital"]["hospital_id"]
+        before = self._fleet(hid)["available_units"]
+        self.assertEqual(tm.release(out["allocation_id"])["result"], "released")
+        self.assertEqual(self._fleet(hid)["available_units"], before + 1)
+
+    def test_round_trip_time(self):
+        import transaction_manager as tm
+        self.assertEqual(tm.ambulance_round_trip_sec(6), round(2 * 6 * 60 * config.CASE_TIME_SCALE))
+        self.assertGreater(tm.ambulance_round_trip_sec(None), 0)
+
+    def test_full_fleet_out_means_no_capacity(self):
+        import db
+        import transaction_manager as tm
+        db.execute("UPDATE resources SET available_units = 0 WHERE resource_type = 'AMBULANCE'")
+        rid = self._request()
+        self.assertEqual(tm.reserve(rid)["status"], "no_capacity")
+        self.assertEqual(db.query_one("SELECT status FROM sos_requests WHERE request_id=%s", (rid,))["status"],
+                         "PENDING")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

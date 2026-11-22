@@ -463,8 +463,9 @@ def hospitals():
     for d in docs:
         by_id[d["hospital_id"]]["doctors"].append(d)
     for h in by_id.values():
-        total = sum(r["total_units"] for r in h["resources"])
-        free = sum(r["available_units"] for r in h["resources"])
+        care = [r for r in h["resources"] if r["resource_type"] != "AMBULANCE"]   # beds/OTs, not vehicles
+        total = sum(r["total_units"] for r in care)
+        free = sum(r["available_units"] for r in care)
         h["occupancy_pct"] = round(100 * (total - free) / total, 1) if total else 0
     return jsonify({"ok": True, "hospitals": list(by_id.values())})
 
@@ -616,7 +617,8 @@ def map_data():
         "SELECT h.hospital_id, h.name, h.area, h.phone, h.latitude, h.longitude, "
         "SUM(r.total_units) AS total_units, SUM(r.available_units) AS free_units, "
         "SUM(CASE WHEN r.resource_type = 'ICU_BED' THEN r.available_units ELSE 0 END) AS free_icu, "
-        "SUM(CASE WHEN r.resource_type = 'VENTILATOR' THEN r.available_units ELSE 0 END) AS free_vent "
+        "SUM(CASE WHEN r.resource_type = 'VENTILATOR' THEN r.available_units ELSE 0 END) AS free_vent, "
+        "SUM(CASE WHEN r.resource_type = 'AMBULANCE' THEN r.available_units ELSE 0 END) AS free_amb "
         "FROM hospitals h JOIN resources r ON r.hospital_id = h.hospital_id "
         "WHERE h.is_lab = 0 GROUP BY h.hospital_id ORDER BY h.hospital_id")
     waiting = db.query_all(
@@ -703,7 +705,8 @@ _worker_started = threading.Event()
 
 
 def start_auto_complete_worker():
-    """Background thread: every few seconds, finish cases whose time is over."""
+    """Background thread: every few seconds, bring back ambulances whose round trip is over
+    and finish cases whose time is over."""
     if not config.AUTO_COMPLETE or _worker_started.is_set():
         return
     _worker_started.set()
@@ -711,6 +714,9 @@ def start_auto_complete_worker():
     def run():
         while True:
             try:
+                back = tm.return_due_ambulances()
+                if back:
+                    app.logger.info("ambulances back for allocations %s", back)
                 done = tm.complete_due_cases()
                 if done:
                     app.logger.info("auto-completed allocations %s", done)

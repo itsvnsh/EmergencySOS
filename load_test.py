@@ -66,6 +66,11 @@ def check_consistency(start_used):
     used_now, docs_now = _snapshot()
     active_res = {r["resource_id"]: r["n"] for r in db.query_all(
         "SELECT resource_id, COUNT(*) AS n FROM allocations WHERE status = 'ACTIVE' GROUP BY resource_id")}
+    # ambulances still on their round trip are in use too
+    for r in db.query_all("SELECT ambulance_resource_id AS rid, COUNT(*) AS n FROM allocations "
+                          "WHERE ambulance_resource_id IS NOT NULL AND ambulance_returned_at IS NULL "
+                          "GROUP BY ambulance_resource_id"):
+        active_res[r["rid"]] = active_res.get(r["rid"], 0) + r["n"]
     active_doc = {r["doctor_id"]: r["n"] for r in db.query_all(
         "SELECT doctor_id, COUNT(*) AS n FROM allocations WHERE status = 'ACTIVE' "
         "AND doctor_id IS NOT NULL GROUP BY doctor_id")}

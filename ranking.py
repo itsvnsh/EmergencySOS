@@ -42,8 +42,12 @@ def fetch_candidates(resource_type, specialist):
                (SELECT COUNT(*) FROM doctors d
                  WHERE d.hospital_id = h.hospital_id AND d.specialization = 'GENERAL_PHYSICIAN'
                    AND d.on_shift = 1 AND d.current_cases < d.max_cases) AS physicians_free,
-               (SELECT SUM(total_units) FROM resources x WHERE x.hospital_id = h.hospital_id) AS all_total,
-               (SELECT SUM(available_units) FROM resources x WHERE x.hospital_id = h.hospital_id) AS all_free
+               (SELECT a.available_units FROM resources a
+                 WHERE a.hospital_id = h.hospital_id AND a.resource_type = 'AMBULANCE') AS ambulances_free,
+               (SELECT SUM(total_units) FROM resources x WHERE x.hospital_id = h.hospital_id
+                   AND x.resource_type <> 'AMBULANCE') AS all_total,
+               (SELECT SUM(available_units) FROM resources x WHERE x.hospital_id = h.hospital_id
+                   AND x.resource_type <> 'AMBULANCE') AS all_free
           FROM hospitals h
           JOIN resources r ON r.hospital_id = h.hospital_id AND r.resource_type = %s
          WHERE h.is_lab = 0
@@ -58,11 +62,12 @@ def score_hospitals(lat, lon, specialist, candidates, weights=None, distances=No
     `candidates` are dicts like the rows returned by fetch_candidates().
     `distances`  optional {hospital_id: {"km", "minutes", "source"}} with ROAD
                  distances; hospitals missing from it use the offline estimate.
-    Hospitals with zero free units of the required resource are dropped.
+    Hospitals with zero free units of the required resource are dropped, and so are
+    hospitals whose ambulances are all out (when the row says so: `ambulances_free`).
     """
     weights = weights or config.RANK_WEIGHTS
     distances = distances or {}
-    usable = [dict(c) for c in candidates if int(c["available_units"]) > 0]
+    usable = [dict(c) for c in candidates if _can_take(c)]
     if not usable:
         return []
 
@@ -110,6 +115,12 @@ def score_hospitals(lat, lon, specialist, candidates, weights=None, distances=No
     return usable
 
 
+def _can_take(c):
+    """A free unit of the right type, and an ambulance to bring the patient in."""
+    amb = c.get("ambulances_free", 1)
+    return int(c["available_units"]) > 0 and amb is not None and int(amb) > 0
+
+
 def road_distances_to(lat, lon, hospitals):
     """{hospital_id: {km, minutes, source}} for the given hospital rows (one routing call)."""
     found = routing.road_distances(lat, lon, [(h["latitude"], h["longitude"]) for h in hospitals])
@@ -119,7 +130,7 @@ def road_distances_to(lat, lon, hospitals):
 def rank_for_request(request):
     """Rank hospitals for one SOS request row (needs lat/lon, resource, specialist)."""
     candidates = fetch_candidates(request["required_resource"], request["required_specialist"])
-    usable = [c for c in candidates if int(c["available_units"]) > 0]
+    usable = [c for c in candidates if _can_take(c)]
     distances = road_distances_to(request["latitude"], request["longitude"], usable)
     return score_hospitals(request["latitude"], request["longitude"],
                            request["required_specialist"], candidates, distances=distances)

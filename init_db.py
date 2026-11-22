@@ -17,23 +17,24 @@ from db import get_connection
 SCHEMA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "schema.sql")
 
 # (name, area, lat, lon, phone, {resource: (total, available)})
+# AMBULANCE = the hospital's own fleet (simulated); a case needs one to be brought in
 HOSPITALS = [
     ("Max Super Speciality Hospital", "Malsi, Mussoorie Road", 30.3735, 78.0758, "0135-7193000",
-     {"ICU_BED": (20, 4), "VENTILATOR": (12, 3), "OPERATION_THEATRE": (6, 2), "GENERAL_BED": (120, 25)}),
+     {"ICU_BED": (20, 4), "VENTILATOR": (12, 3), "OPERATION_THEATRE": (6, 2), "GENERAL_BED": (120, 25), "AMBULANCE": (4, 3)}),
     ("Shri Mahant Indiresh Hospital", "Patel Nagar", 30.3005, 78.0135, "0135-6672000",
-     {"ICU_BED": (30, 6), "VENTILATOR": (15, 4), "OPERATION_THEATRE": (8, 3), "GENERAL_BED": (300, 40)}),
+     {"ICU_BED": (30, 6), "VENTILATOR": (15, 4), "OPERATION_THEATRE": (8, 3), "GENERAL_BED": (300, 40), "AMBULANCE": (5, 4)}),
     ("Government Doon Medical College Hospital", "Parade Ground", 30.3244, 78.0437, "0135-2659355",
-     {"ICU_BED": (25, 2), "VENTILATOR": (14, 1), "OPERATION_THEATRE": (6, 1), "GENERAL_BED": (400, 30)}),
+     {"ICU_BED": (25, 2), "VENTILATOR": (14, 1), "OPERATION_THEATRE": (6, 1), "GENERAL_BED": (400, 30), "AMBULANCE": (4, 2)}),
     ("Synergy Institute of Medical Sciences", "Ballupur", 30.3345, 78.0095, "0135-2751600",
-     {"ICU_BED": (14, 3), "VENTILATOR": (8, 2), "OPERATION_THEATRE": (4, 1), "GENERAL_BED": (100, 18)}),
+     {"ICU_BED": (14, 3), "VENTILATOR": (8, 2), "OPERATION_THEATRE": (4, 1), "GENERAL_BED": (100, 18), "AMBULANCE": (2, 2)}),
     ("Coronation District Hospital", "Ghanta Ghar", 30.3290, 78.0565, "0135-2650085",
-     {"ICU_BED": (8, 1), "VENTILATOR": (4, 1), "OPERATION_THEATRE": (3, 1), "GENERAL_BED": (150, 22)}),
+     {"ICU_BED": (8, 1), "VENTILATOR": (4, 1), "OPERATION_THEATRE": (3, 1), "GENERAL_BED": (150, 22), "AMBULANCE": (2, 1)}),
     ("Graphic Era Hospital", "Clement Town", 30.2690, 78.0090, "0135-2643421",
-     {"ICU_BED": (16, 5), "VENTILATOR": (10, 4), "OPERATION_THEATRE": (5, 2), "GENERAL_BED": (150, 35)}),
+     {"ICU_BED": (16, 5), "VENTILATOR": (10, 4), "OPERATION_THEATRE": (5, 2), "GENERAL_BED": (150, 35), "AMBULANCE": (3, 3)}),
     ("Himalayan Hospital", "Jolly Grant", 30.1905, 78.1700, "0135-2471200",
-     {"ICU_BED": (40, 8), "VENTILATOR": (20, 6), "OPERATION_THEATRE": (10, 3), "GENERAL_BED": (500, 60)}),
+     {"ICU_BED": (40, 8), "VENTILATOR": (20, 6), "OPERATION_THEATRE": (10, 3), "GENERAL_BED": (500, 60), "AMBULANCE": (4, 3)}),
     ("AIIMS Rishikesh", "Virbhadra Road, Rishikesh", 30.0869, 78.2676, "0135-2462900",
-     {"ICU_BED": (60, 10), "VENTILATOR": (30, 7), "OPERATION_THEATRE": (14, 4), "GENERAL_BED": (900, 90)}),
+     {"ICU_BED": (60, 10), "VENTILATOR": (30, 7), "OPERATION_THEATRE": (14, 4), "GENERAL_BED": (900, 90), "AMBULANCE": (6, 5)}),
 ]
 
 # simulated doctors: hospital index -> list of (name, specialization, on_shift, max_cases)
@@ -64,6 +65,7 @@ DOCTORS = {
 
 # hidden hospital used only by the concurrency lab (excluded from ranking)
 LAB_HOSPITAL = ("Concurrency Lab Hospital", "Simulation only", 30.3165, 78.0322, None)
+LAB_AMBULANCES = 50
 
 
 def _split_sql(text):
@@ -113,12 +115,15 @@ def load_sample_data():
                                 "max_cases) VALUES (%s,%s,%s,%s,%s)",
                                 (hospital_ids[idx], dname, spec, on_shift, max_cases))
 
-            # lab hospital: one ICU bed, one cardiologist with plenty of capacity
+            # lab hospital: one ICU bed, a large ambulance fleet (so only the bed is contested)
+            # and one cardiologist with plenty of capacity
             cur.execute("INSERT INTO hospitals (name, area, latitude, longitude, phone, is_lab) "
                         "VALUES (%s,%s,%s,%s,%s,1)", LAB_HOSPITAL)
             lab_id = cur.lastrowid
             cur.execute("INSERT INTO resources (hospital_id, resource_type, total_units, available_units) "
                         "VALUES (%s,'ICU_BED',1,1)", (lab_id,))
+            cur.execute("INSERT INTO resources (hospital_id, resource_type, total_units, available_units) "
+                        "VALUES (%s,'AMBULANCE',%s,%s)", (lab_id, LAB_AMBULANCES, LAB_AMBULANCES))
             cur.execute("INSERT INTO doctors (hospital_id, name, specialization, on_shift, max_cases) "
                         "VALUES (%s,'Dr. Lab Cardiologist','CARDIOLOGIST',1,50)", (lab_id,))
 
