@@ -203,14 +203,20 @@ function renderDispatch(res) {
       <td class="num">${h.occupancy_pct}%</td><td class="num"><b>${h.score}</b></td></tr>`);
   const ok = res.status === "allocated";
   const headline = ok
-    ? `Allocated to ${esc(res.hospital.name)}`
+    ? `Allocated to ${esc(res.hospital.name)}${res.manual ? " (your choice)" : ""}`
     : res.status === "no_capacity" ? "No capacity - request stays in queue" : esc(res.message || res.status);
+  const rec = res.recommended;
+  const manualRows = res.manual ? `<dt>Chosen by</dt><dd><span class="tag info">dispatcher</span>
+      ${rec ? (res.hospital && rec.hospital_id === res.hospital.hospital_id ? " (same as the recommendation)"
+        : ` instead of the recommended <b>${esc(rec.name)}</b>`) : ""}
+      ${res.note ? `<div class="muted small">Reason: ${esc(res.note)}</div>` : ""}</dd>` : "";
   box.innerHTML = `
     <div class="result ${ok ? "ok" : "bad"}">
       <h3>${headline}</h3>
       <dl class="kv">
         <dt>Request</dt><dd>#${r.request_id} ${esc(r.patient_name)} &middot; ${nice(r.emergency_type)} ${pBadge(r.priority)}
 </dd>
+        ${manualRows}
         ${res.decision ? `<dt>Chosen by</dt><dd>${queueTag(res.decision)} &rarr; <b>${esc(res.decision.algorithm)}</b>
           <div class="muted small">${esc(res.decision.reason)}</div></dd>` : ""}
         <dt>Unit</dt><dd>${nice(r.required_resource)}</dd>
@@ -219,7 +225,7 @@ function renderDispatch(res) {
         ${res.ambulance ? `<dt>Ambulance</dt><dd>sent from the hospital &middot; ${res.ambulance.left} left there &middot; back in ~${Math.round(res.ambulance.back_in_sec / 60)} min</dd>` : ""}
         ${res.bankers ? `<dt>Banker's check</dt><dd><span class="tag ok">safe</span> <span class="muted small">safe sequence: ${res.bankers.sequence.map(esc).join(" &rarr; ")}</span></dd>` : ""}
         <dt>Distance</dt><dd>${res.hospital.distance_km} km by road &middot; ~${res.hospital.travel_min} min ${srcTag(res.hospital.distance_source)} &middot; score ${res.hospital.score}</dd>
-        <dt>Fallbacks</dt><dd>${res.fallbacks}</dd>` : ""}
+        ${res.manual ? "" : `<dt>Fallbacks</dt><dd>${res.fallbacks}</dd>`}` : ""}
         <dt>Nearest hospital</dt><dd>${esc(res.nearest?.name)} (${res.nearest?.distance_km} km) ${phoneLine(res.nearest?.phone)}</dd>
       </dl>
       ${attempts ? `<p class="muted small" style="margin:10px 0 0">Transaction attempts:</p><ol class="steps">${attempts}</ol>` : ""}
@@ -227,6 +233,70 @@ function renderDispatch(res) {
     ${rankRows.length ? `<p class="muted small" style="margin:14px 0 4px">Ranking snapshot (40% road distance, 25% free units, 20% specialist, 15% load):</p>
       ${table(["#", "Hospital", { label: "Road km", num: 1 }, { label: "Free", num: 1 }, { label: "Spec.", num: 1 }, { label: "Load", num: 1 }, { label: "Score", num: 1 }], rankRows)}` : ""}`;
 }
+
+// ---------- dispatcher chooses the hospital ----------
+async function openPicker(requestId) {
+  const { queue } = await api("/api/queue");
+  if (!queue.length) { toast("Nobody is waiting: send an SOS first.", true); return; }
+  const sel = $("#pickRequest");
+  sel.innerHTML = queue.map((q) => `<option value="${q.request_id}">#${q.request_id} ${esc(q.patient_name)} &middot; ${nice(q.emergency_type)} &middot; P${q.priority} &middot; needs ${nice(q.required_resource)}</option>`).join("");
+  if (requestId && queue.some((q) => q.request_id === +requestId)) sel.value = String(requestId);
+  $("#pickReason").value = "";
+  $("#pickCard").classList.remove("hidden");
+  await loadPickOptions();
+  $("#pickCard").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+async function loadPickOptions() {
+  const id = $("#pickRequest").value;
+  if (!id) return;
+  const { request: r, options } = await api(`/api/hospital-options/${id}`);
+  const rows = options.map((o) => `<tr class="${o.recommended ? "best" : ""} ${o.can_take ? "" : "cannot"}">
+      <td>${o.rank ? `#${o.rank}` : '<span class="muted">-</span>'}</td>
+      <td><b>${esc(o.name)}</b>${o.recommended ? ' <span class="tag ok">recommended</span>' : ""}<div class="muted small">${esc(o.area || "")}</div></td>
+      <td class="num">${o.distance_km}<div class="muted small">${o.travel_min} min ${srcTag(o.distance_source)}</div></td>
+      <td class="num">${o.available_units}/${o.total_units}</td>
+      <td class="num">${o.ambulances_free ?? 0}</td>
+      <td>${o.specialist_on_duty ? '<span class="tag ok">yes</span>' : '<span class="tag warn">no</span>'}</td>
+      <td class="num">${o.score ?? "-"}</td>
+      <td>${o.can_take
+        ? `<button class="${o.recommended ? "primary" : "ghost"} small" data-pick-hosp="${o.hospital_id}" data-pick-name="${esc(o.name)}">Allocate here</button>`
+        : `<span class="tag bad">${esc(o.why_not)}</span>`}</td></tr>`);
+  $("#pickTable").innerHTML = `<p class="muted small">Request #${r.request_id} needs <b>${nice(r.required_resource)}</b> +
+      ${nice(r.required_specialist)}. Hospitals without this unit type at all are not listed.</p>`
+    + table(["Rank", "Hospital", { label: "Road km", num: 1 }, { label: `Free ${nice(r.required_resource)}`, num: 1 },
+      { label: "Ambulances", num: 1 }, "Specialist", { label: "Score", num: 1 }, ""], rows,
+      "No hospital has this unit type.");
+}
+
+$("#pickBtn").addEventListener("click", (e) => withButton(e.target, () => openPicker()));
+$("#pickClose").addEventListener("click", () => $("#pickCard").classList.add("hidden"));
+$("#pickRequest").addEventListener("change", () => loadPickOptions().catch((e) => toast(e.message, true)));
+$("#pickTable").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-pick-hosp]");
+  if (!b) return;
+  withButton(b, async () => {
+    const res = await api("/api/dispatch", { method: "POST", body: {
+      request_id: +$("#pickRequest").value, hospital_id: +b.dataset.pickHosp, reason: $("#pickReason").value } });
+    renderDispatch(res);
+    if (res.status === "allocated") {
+      toast(`Request #${res.request_id} allocated to ${res.hospital.name}`);
+      $("#pickCard").classList.add("hidden");
+      $("#dispatchResult").scrollIntoView({ behavior: "smooth", block: "center" });
+    } else {
+      toast(res.message || "Not booked", true);
+      await loadPickOptions();                       // show the hospital's real state now
+    }
+    loadAllocations();
+    refreshStats();
+  });
+});
+document.addEventListener("click", (e) => {
+  const b = e.target.closest?.("[data-pick-req]");
+  if (!b) return;
+  showTab("dispatch");
+  openPicker(b.dataset.pickReq).catch((err) => toast(err.message, true));
+});
 
 // ---------- allocations ----------
 function ambulanceCell(a) {
@@ -275,9 +345,10 @@ async function loadQueue() {
     <td class="num">${q.severity}</td><td>${pBadge(q.priority)}</td>
     <td>${q.effective_priority < q.priority ? `${pBadge(q.effective_priority)} <span class="tag warn">aged</span>` : pBadge(q.effective_priority)}</td>
     <td>${queueTag(q.auto)}</td><td title="${esc(q.auto.reason)}">${esc(q.auto.algorithm)}</td>
-    <td class="num">${q.est_handling_min}</td><td class="num">${q.wait_min}</td></tr>`);
+    <td class="num">${q.est_handling_min}</td><td class="num">${q.wait_min}</td>
+    <td>${isDispatcher() ? `<button class="ghost small" data-pick-req="${q.request_id}">Choose hospital</button>` : ""}</td></tr>`);
   $("#queueTable").innerHTML = table(
-    [{ label: "Pos", num: 1 }, "ID", "Patient", "Type", { label: "Sev", num: 1 }, "Priority", "Effective", "Queue", "Algorithm used", { label: "Burst (min)", num: 1 }, { label: "Waiting (min)", num: 1 }],
+    [{ label: "Pos", num: 1 }, "ID", "Patient", "Type", { label: "Sev", num: 1 }, "Priority", "Effective", "Queue", "Algorithm used", { label: "Burst (min)", num: 1 }, { label: "Waiting (min)", num: 1 }, ""],
     rows, "The queue is empty. Send an SOS or click 'Add demo requests'.");
 }
 $("#seedBtn").addEventListener("click", (e) =>
@@ -566,7 +637,11 @@ function refreshActive() {
 function refreshLive() {
   refreshStats();
   if (state.tab === "queue") { loadQueue().catch(() => {}); loadRecent().catch(() => {}); }
-  if (state.tab === "dispatch") loadAllocations().catch(() => {});
+  if (state.tab === "dispatch") {
+    loadAllocations().catch(() => {});
+    if (!$("#pickCard").classList.contains("hidden") && !document.activeElement.closest?.("#pickCard"))
+      loadPickOptions().catch(() => {});
+  }
   if (state.tab === "map") loadMap().catch(() => {});
   if (state.tab === "audit") loadAudit().catch(() => {});
   if (state.tab === "dashboard") loadDashboard().catch(() => {});

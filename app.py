@@ -457,9 +457,41 @@ def rank(request_id):
                     "nearest": ranking.nearest_hospital(req["latitude"], req["longitude"])})
 
 
+@app.get("/api/hospital-options/<int:request_id>")
+@require_role(*STAFF)
+def hospital_options(request_id):
+    """All hospitals with the unit type this request needs: which can take it, and why not."""
+    req = db.query_one("SELECT * FROM sos_requests WHERE request_id = %s AND is_lab = 0", (request_id,))
+    if not req:
+        raise ApiError("Request not found", 404)
+    return jsonify({"ok": True, "request": _public_request(req), "options": ranking.hospital_options(req)})
+
+
+def _dispatch_to_chosen(req, data):
+    """The dispatcher picked the hospital: same locked transaction, no fallback."""
+    options = ranking.hospital_options(req)
+    try:
+        hid = int(data["hospital_id"])
+    except (TypeError, ValueError):
+        raise ApiError("hospital_id must be a number")
+    cand = next((o for o in options if o["hospital_id"] == hid), None)
+    if not cand:
+        unit = str(req["required_resource"]).replace("_", " ").lower()
+        raise ApiError(f"That hospital has no {unit} at all, so it cannot take this patient")
+    recommended = next((o for o in options if o.get("rank") == 1), None)
+    note = str(data.get("reason") or "").strip()[:200] or None
+    result = tm.reserve(req["request_id"], ranked=[cand], manual=True, note=note, recommended=recommended)
+    return jsonify({"ok": True, "policy": "MANUAL", "request": req,
+                    "ranked": [o for o in options if o.get("rank")][:5], "recommended": recommended,
+                    "nearest": ranking.nearest_hospital(req["latitude"], req["longitude"]),
+                    "picked_from_position": None, "decision": None, "note": note, **result})
+
+
 @app.post("/api/dispatch")
 @require_role("DISPATCHER")
 def dispatch():
+    """Dispatch the next patient (Automatic mode) or a given request_id. With hospital_id the
+    dispatcher chooses the hospital; otherwise the ranking does, with fallbacks."""
     data = body()
     policy = get_policy(data.get("policy"))
     if data.get("request_id"):
@@ -467,9 +499,13 @@ def dispatch():
                            (int(data["request_id"]),))
         if not req:
             raise ApiError("Request not found", 404)
+        if data.get("hospital_id") is not None:
+            return _dispatch_to_chosen(req, data)
         position = None
         decision = None
     else:
+        if data.get("hospital_id") is not None:
+            raise ApiError("Choose which request to send to that hospital (request_id)")
         nxt = scheduler.next_request(pending_requests(), policy, now=db_now())
         if not nxt:
             return jsonify({"ok": True, "status": "empty", "message": "The queue is empty."})

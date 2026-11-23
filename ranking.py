@@ -136,6 +136,44 @@ def rank_for_request(request):
                            request["required_specialist"], candidates, distances=distances)
 
 
+def hospital_options(request):
+    """
+    Every hospital that has the unit type this patient needs, for a dispatcher who wants
+    to choose the hospital (e.g. the recommended one phoned to say its beds are full).
+    Hospitals that can take the patient come first, in ranking order with their score;
+    the others follow, nearest first, with the reason they cannot take the patient now.
+    """
+    candidates = fetch_candidates(request["required_resource"], request["required_specialist"])
+    distances = road_distances_to(request["latitude"], request["longitude"], candidates)
+    ranked = score_hospitals(request["latitude"], request["longitude"],
+                             request["required_specialist"], candidates, distances=distances)
+    by_id = {c["hospital_id"]: c for c in ranked}
+    unit = str(request["required_resource"]).replace("_", " ").lower()
+    options = []
+    for c in candidates:
+        o = by_id.get(c["hospital_id"])
+        if o is None:
+            o = dict(c)
+            d = distances.get(c["hospital_id"])
+            if d is None:
+                km, mins = routing.estimate(request["latitude"], request["longitude"], c["latitude"], c["longitude"])
+                d = {"km": km, "minutes": mins, "source": "ESTIMATE"}
+            o.update(distance_km=round(d["km"], 2), travel_min=round(d["minutes"], 1), distance_source=d["source"],
+                     rank=None, score=None, latitude=float(c["latitude"]), longitude=float(c["longitude"]))
+        o["can_take"] = _can_take(c)
+        if int(c["available_units"]) <= 0:
+            o["why_not"] = f"no free {unit}"
+        elif not o["can_take"]:
+            o["why_not"] = "no ambulance free"
+        else:
+            o["why_not"] = None
+        o["specialist_on_duty"] = int(c.get("specialists_free") or 0) > 0
+        o["recommended"] = o.get("rank") == 1
+        options.append(o)
+    options.sort(key=lambda o: (o["rank"] is None, o["rank"] or 0, o["distance_km"]))
+    return options
+
+
 def nearest_hospital(lat, lon):
     """Nearest hospital by road (no capacity check) - shown next to the ranked choice."""
     rows = db.query_all("SELECT hospital_id, name, phone, latitude, longitude FROM hospitals WHERE is_lab = 0")

@@ -417,3 +417,10 @@ pre.sql { font: 12px/1.45 var(--mono); background: var(--soft); border: 1px soli
   margin-left: 4px; border: 1px solid #1565c0; background: #fff; color: #1565c0; border-radius: 6px;
   padding: 1px 8px; font: inherit; font-size: 12px; cursor: pointer;
 }
+
+/* dispatcher chooses the hospital */
+.pick-card { border-top-color: var(--red); }
+.pick-row { align-items: flex-end; }
+.pick-row label { flex: 1 1 260px; }
+#pickTable tr.cannot td { color: var(--muted); }
+#pickTable tr.best td { background: var(--green-soft); }

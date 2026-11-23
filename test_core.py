@@ -1795,5 +1795,104 @@ class PortalAlarmTests(unittest.TestCase):
             self.assertIn(el, self.html)
 
 
+# ---------------------------------------------------------------------------
+# Dispatcher chooses the hospital (manual override)
+# ---------------------------------------------------------------------------
+@unittest.skipUnless(DB_OK, "MySQL not reachable")
+class ManualHospitalChoiceTests(unittest.TestCase):
+    def setUp(self):
+        import init_db
+        init_db.initialise()
+        from app import app
+        self.c = app.test_client()
+        login(self.c, "dispatcher", "dispatch123")
+
+    def _request(self, etype="CARDIAC", sev=5):
+        from app import insert_request
+        return insert_request("Manual Test", None, 30.2683, 77.9947, etype, sev, None)[0]
+
+    def _options(self, rid):
+        r = self.c.get(f"/api/hospital-options/{rid}")
+        self.assertEqual(r.status_code, 200)
+        return r.get_json()["options"]
+
+    def test_options_list_every_hospital_with_the_unit(self):
+        import db
+        rid = self._request()
+        opts = self._options(rid)
+        with_icu = db.query_one("SELECT COUNT(*) AS n FROM resources r JOIN hospitals h USING (hospital_id) "
+                                "WHERE h.is_lab = 0 AND r.resource_type = 'ICU_BED'")["n"]
+        self.assertEqual(len(opts), with_icu)
+        self.assertEqual(sum(o["recommended"] for o in opts), 1)
+        self.assertTrue(opts[0]["recommended"])                       # recommended first
+        full = opts[-1]["hospital_id"]
+        db.execute("UPDATE resources SET available_units = 0 WHERE hospital_id = %s AND resource_type = 'ICU_BED'", (full,))
+        o = next(x for x in self._options(rid) if x["hospital_id"] == full)
+        self.assertFalse(o["can_take"])
+        self.assertEqual(o["why_not"], "no free icu bed")
+        self.assertIsNone(o["rank"])
+
+    def test_dispatcher_choice_is_booked_and_logged(self):
+        import db
+        rid = self._request()
+        opts = self._options(rid)
+        pick = [o for o in opts if o["can_take"] and not o["recommended"]][-1]
+        r = self.c.post("/api/dispatch", json={"request_id": rid, "hospital_id": pick["hospital_id"],
+                                               "reason": "recommended hospital phoned: ICU full"}).get_json()
+        self.assertEqual(r["status"], "allocated")
+        self.assertTrue(r["manual"])
+        self.assertEqual(r["hospital"]["hospital_id"], pick["hospital_id"])
+        self.assertEqual(r["attempts"][0]["hospital_id"], pick["hospital_id"])
+        self.assertEqual(len(r["attempts"]), 1)                       # no fallback
+        alloc = db.query_one("SELECT hospital_id, ambulance_resource_id FROM allocations WHERE request_id = %s", (rid,))
+        self.assertEqual(alloc["hospital_id"], pick["hospital_id"])
+        self.assertIsNotNone(alloc["ambulance_resource_id"])          # same transaction: ambulance too
+        log = db.query_one("SELECT details FROM audit_log WHERE event_type = 'MANUAL_CHOICE' AND request_id = %s", (rid,))
+        self.assertIn(opts[0]["name"], log["details"])                # the recommended one is named
+        self.assertIn("ICU full", log["details"])
+
+    def test_full_hospital_is_refused_and_nothing_booked(self):
+        import db
+        rid = self._request()
+        hid = self._options(rid)[0]["hospital_id"]
+        before = db.query_one("SELECT available_units FROM resources WHERE hospital_id = %s AND resource_type = 'AMBULANCE'", (hid,))
+        db.execute("UPDATE resources SET available_units = 0 WHERE hospital_id = %s AND resource_type = 'ICU_BED'", (hid,))
+        r = self.c.post("/api/dispatch", json={"request_id": rid, "hospital_id": hid}).get_json()
+        self.assertEqual(r["status"], "refused")
+        self.assertEqual(r["reason"], "no_unit")
+        self.assertIn("Nothing was booked", r["message"])
+        self.assertEqual(db.query_one("SELECT status FROM sos_requests WHERE request_id = %s", (rid,))["status"], "PENDING")
+        self.assertIsNone(db.query_one("SELECT 1 FROM allocations WHERE request_id = %s", (rid,)))
+        after = db.query_one("SELECT available_units FROM resources WHERE hospital_id = %s AND resource_type = 'AMBULANCE'", (hid,))
+        self.assertEqual(before, after)                               # ambulance not taken either
+
+    def test_hospital_without_the_unit_type_is_rejected(self):
+        import db
+        rid = self._request("TRAUMA", 5)                              # needs an operation theatre
+        no_ot = db.query_one("SELECT h.hospital_id FROM hospitals h WHERE h.is_lab = 0 AND NOT EXISTS "
+                             "(SELECT 1 FROM resources r WHERE r.hospital_id = h.hospital_id "
+                             " AND r.resource_type = 'OPERATION_THEATRE') LIMIT 1")
+        if not no_ot:
+            hid = self._options(rid)[0]["hospital_id"]
+            db.execute("DELETE FROM resources WHERE hospital_id = %s AND resource_type = 'OPERATION_THEATRE'", (hid,))
+        else:
+            hid = no_ot["hospital_id"]
+        r = self.c.post("/api/dispatch", json={"request_id": rid, "hospital_id": hid})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("operation theatre", r.get_json()["error"])
+
+    def test_only_dispatchers_choose(self):
+        from app import app
+        rid = self._request()
+        hid = self._options(rid)[0]["hospital_id"]
+        admin = app.test_client()
+        login(admin, "admin", "admin123")
+        self.assertEqual(admin.post("/api/dispatch", json={"request_id": rid, "hospital_id": hid}).status_code, 403)
+        patient = app.test_client()
+        login(patient, "patient", "patient123")
+        self.assertEqual(patient.get(f"/api/hospital-options/{rid}").status_code, 403)
+        self.assertEqual(self.c.post("/api/dispatch", json={"hospital_id": hid}).status_code, 400)  # which patient?
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

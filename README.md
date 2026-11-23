@@ -246,6 +246,7 @@ Start with `CASE_TIME_SCALE=0.1` so automatic completion is visible within a min
 20. **Dashboard tab**: live KPI tiles (waiting, active, SOS in 24 h, average real response time, bed occupancy), then four charts: average and critical-patient wait for each scheduling algorithm, bed occupancy per hospital (fullest first, ambulances out next to it), SOS per hour over the last 24 h (critical in orange) and the **real** measured wait per priority (P1 should be lowest). Below: the Gantt chart of the Automatic scheduler and the connection-pool counters. Hover any bar for its numbers. Send an SOS on a phone and the dashboard updates by itself.
 21. **Connection pool (terminal)**: `python load_test.py --compare-pool`. Same 20 clients × 15 SOS with the pool off (a new MySQL connection for every query), then on. Show the throughput jump and that both runs stay **CONSISTENT: YES**.
 22. **Phone alert + Hindi**: on a phone open `/sos`, tap **हिन्दी**, send an SOS (everything, including the status page, is in Hindi). Dispatch it from the console: the phone **plays a chime, vibrates and flashes** *अस्पताल तय हो गया* the moment the hospital is booked (and shows a notification if the page is in the background and notifications were allowed). **Test** plays the alert without dispatching.
+23. **Dispatcher overrides the recommendation**: SOS & Dispatch → *Choose hospital…*, pick the patient, type a reason ("recommended hospital phoned: ICU full"), click *Allocate here* on another hospital. The result says *your choice instead of the recommended …*; the Audit log shows `MANUAL_CHOICE`. Try a hospital with 0 free units (set it in Hospitals & Admin): refused, nothing booked.
 
 ## 5. Key design decisions
 
@@ -389,7 +390,8 @@ Who can call it: \* anyone, **P** patient, **D** dispatcher, **A** hospital admi
 | GET · POST | `/api/admin/users` · POST `/api/admin/users/<id>/active` | S | list, create, enable/disable accounts |
 | GET | `/api/queue` | D, A | pending queue in Automatic order (`?policy=FCFS` etc. to compare) |
 | GET | `/api/rank/<id>` | D, A | ranked hospitals for a request |
-| POST | `/api/dispatch` | D | serve the head of the queue (Automatic mode), or `{request_id}` |
+| POST | `/api/dispatch` | D | serve the head of the queue (Automatic mode), or `{request_id}`; with `{request_id, hospital_id, reason?}` the dispatcher chooses the hospital (same locked transaction, no fallback, logged as `MANUAL_CHOICE`) |
+| GET | `/api/hospital-options/<request_id>` | D, A | every hospital with the needed unit type: rank, score, free units, ambulances, specialist, and why it cannot take the patient |
 | GET | `/api/requests` | D, A | recent requests |
 | GET | `/api/allocations?status=ACTIVE` | D, A | allocations |
 | POST | `/api/allocations/<id>/release` | D | finish a case |
@@ -437,6 +439,8 @@ Who can call it: \* anyone, **P** patient, **D** dispatcher, **A** hospital admi
 - [x] connection pool (counting semaphore, rollback on return, hold-and-wait guard) with before/after load-test numbers
 - [x] SOS portal: sound + vibration + notification when a hospital is assigned; English / Hindi switch
 - [x] 17 new tests (111 in total)
+
+**Dispatcher chooses the hospital (done):** *Choose hospital…* (SOS & Dispatch tab, or on any waiting patient in the Queue tab) lists every hospital with the needed unit; the dispatcher can send the patient to another one when the recommended hospital cannot really take them (e.g. it phoned to say its beds are full). Same locked transaction and Banker's check, no silent fallback: if that hospital cannot take the patient nothing is booked and the reason is shown. Logged as `MANUAL_CHOICE` with the recommended hospital and the dispatcher's reason.
 
 **Tier 3 (done):**
 - [x] offline map: service-worker tile cache + drawn fallback map, automatic switch back

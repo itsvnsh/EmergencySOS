@@ -75,6 +75,7 @@
           <div class="inline">
             <span class="tag ok">Automatic mode</span>
             <button class="primary" id="dispatchBtn">Dispatch next</button>
+            <button class="ghost" id="pickBtn" title="Send a waiting patient to a hospital you choose">Choose hospital&hellip;</button>
           </div>
         </div>
         <p class="muted">You don't pick an algorithm. Each waiting patient is put in a queue by how serious they are,
@@ -89,6 +90,23 @@
           transaction manager reserves the unit.</p>
         <div id="dispatchResult" class="empty">No dispatch yet.</div>
       </div>
+    </div>
+
+    <div class="card pick-card hidden" id="pickCard">
+      <div class="card-head">
+        <h2>Choose the hospital yourself</h2>
+        <button class="ghost small" id="pickClose">Close</button>
+      </div>
+      <p class="muted small">Use this when the recommended hospital cannot really take the patient, for example it phoned to
+        say its beds are full. Your choice goes through the same locked transaction as an automatic dispatch (free unit,
+        doctor, ambulance and the Banker's safety check). If that hospital cannot take the patient, nothing is booked
+        and you are told why. Every manual choice is written to the audit log.</p>
+      <div class="row pick-row">
+        <label>Patient <select id="pickRequest"></select></label>
+        <label>Reason <span class="muted small">(optional, saved in the audit log)</span>
+          <input id="pickReason" maxlength="200" placeholder="e.g. recommended hospital says its ICU is full"></label>
+      </div>
+      <div id="pickTable"></div>
     </div>
 
     <div class="card">

@@ -196,10 +196,23 @@ def ambulance_round_trip_sec(travel_min):
     return max(1, int(round(2 * one_way * 60 * config.CASE_TIME_SCALE)))
 
 
-def reserve(request_id, ranked=None, delay_ms=0):
+MANUAL_REFUSED = {
+    "no_unit": "has no free {unit} right now",
+    "no_ambulance": "has no ambulance free right now",
+    "unsafe": "cannot admit safely (Banker's check: unsafe state)",
+    "lock_error": "is busy (lock timeout) - try again",
+}
+
+
+def reserve(request_id, ranked=None, delay_ms=0, manual=False, note=None, recommended=None):
     """
     Reserve a unit for a pending request, trying hospitals in ranked order.
     Returns a dict describing the outcome and every attempt made.
+
+    manual=True: the dispatcher chose the hospital (ranked = [that one hospital]). It goes
+    through exactly the same locked transaction, but there is no fallback to another
+    hospital: if it cannot take the patient, nothing is booked and the reason is returned.
+    The choice, the recommended hospital and the dispatcher's note go to the audit log.
     """
     req = db.query_one("SELECT * FROM sos_requests WHERE request_id = %s", (request_id,))
     if not req:
@@ -220,7 +233,16 @@ def reserve(request_id, ranked=None, delay_ms=0):
                          "bankers": outcome.get("bankers")})
 
         if outcome["result"] == "allocated":
-            return {"status": "allocated", "request_id": request_id,
+            if manual:
+                rec = (f"recommended was {recommended.get('name')}" if recommended
+                       and recommended.get("hospital_id") != cand["hospital_id"]
+                       else "same as the recommended hospital" if recommended else "no recommendation")
+                db.execute("INSERT INTO audit_log (event_type, request_id, hospital_id, details) "
+                           "VALUES ('MANUAL_CHOICE', %s, %s, %s)",
+                           (request_id, cand["hospital_id"],
+                            (f"Request #{request_id}: dispatcher chose {cand.get('name')} ({rec})"
+                             + (f". Reason: {note}" if note else ""))[:500]))
+            return {"status": "allocated", "request_id": request_id, "manual": manual,
                     "allocation_id": outcome["allocation_id"],
                     "hospital": cand, "doctor": outcome["doctor"], "ambulance": outcome["ambulance"],
                     "bankers": outcome["bankers"],
@@ -228,6 +250,17 @@ def reserve(request_id, ranked=None, delay_ms=0):
         if outcome["result"] in ("not_pending", "not_found"):
             return {"status": outcome["result"], "request_id": request_id, "attempts": attempts,
                     "message": "Request was handled by another dispatcher"}
+        if manual:            # the dispatcher's own choice: report why, do not try another hospital
+            why = MANUAL_REFUSED.get(outcome["result"], outcome["result"]).format(
+                unit=str(req["required_resource"]).replace("_", " ").lower())
+            db.execute("INSERT INTO audit_log (event_type, request_id, hospital_id, details) "
+                       "VALUES ('ROLLBACK', %s, %s, %s)",
+                       (request_id, cand["hospital_id"],
+                        f"Request #{request_id}: dispatcher chose {cand.get('name')}, which {why} "
+                        f"- rolled back, nothing booked"[:500]))
+            return {"status": "refused", "request_id": request_id, "manual": True, "attempts": attempts,
+                    "reason": outcome["result"], "hospital": cand, "bankers": outcome.get("bankers"),
+                    "message": f"{cand.get('name')} {why}. Nothing was booked; choose another hospital."}
         # no_unit (stale ranking), no_ambulance, unsafe or lock_error -> log it, try the next hospital
         if outcome["result"] == "unsafe":
             event, why = "BANKERS_UNSAFE", f"Banker's check {outcome['bankers']['summary']}"
