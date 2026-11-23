@@ -1,9 +1,9 @@
 /* EmergencySOS mobile portal - mobile first, big touch targets (min 48px) */
 :root {
-  --red: #dc2626; --red-dark: #b91c1c; --red-soft: #fee2e2;
-  --blue: #1565c0; --blue-soft: #e3effc;
-  --green: #16a34a; --green-soft: #dcfce7;
-  --ink: #1f2937; --muted: #6b7280; --line: #dbe3ee; --soft: #f5f8fc;
+  --red: #e11d48; --red-dark: #be123c; --red-soft: #ffe4ea;
+  --blue: #2563eb; --blue-dark: #1e40af; --blue-soft: #e8f0ff;
+  --green: #059669; --green-soft: #d6f5e8;
+  --ink: #0f172a; --muted: #64748b; --line: #e3e8f1; --soft: #f3f6fb;
 }
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
@@ -173,3 +173,72 @@ html[lang="hi"] body { font-family: "Nirmala UI", "Noto Sans Devanagari", "Manga
 .alarm-box .alarm-hear {
   margin-top: 2px; background: #fff; color: var(--green); border: 2px solid var(--green); min-height: 48px;
 }
+
+/* =====================================================================
+   Design refresh v2 (patient SOS page): same palette as the console.
+   ===================================================================== */
+body {
+  background: linear-gradient(180deg, #fff5f7 0, var(--soft) 220px);
+  font-family: "Segoe UI Variable Text", "Segoe UI", Inter, system-ui, -apple-system, Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+.bar {
+  background: linear-gradient(120deg, #be123c 0%, var(--red) 55%, #f43f5e 100%);
+  box-shadow: 0 4px 16px rgba(190, 18, 60, .25);
+}
+.cross { border-radius: 9px; box-shadow: 0 3px 10px rgba(0, 0, 0, .2); }
+.logo b { letter-spacing: -.01em; }
+.lang { box-shadow: 0 2px 8px rgba(0, 0, 0, .15); }
+.who button { border-radius: 999px; padding: 4px 10px; }
+
+.call-note { border-radius: 14px; border-color: #fecdd6; background: #fff; box-shadow: 0 2px 10px rgba(15, 23, 42, .04); }
+fieldset { border-radius: 18px; border-color: var(--line); box-shadow: 0 2px 12px rgba(15, 23, 42, .05); padding: 16px; }
+legend { font-weight: 750; letter-spacing: -.01em; }
+input, select { border-radius: 12px; background: #fff; border-color: #d5dce8; transition: border-color .15s, box-shadow .15s; }
+input:focus, select:focus { outline: none; border-color: var(--blue); box-shadow: 0 0 0 3px rgba(37, 99, 235, .18); }
+
+.type, .sev button {
+  background: #fff; border: 1.5px solid #dfe5ef; border-radius: 14px;
+  transition: border-color .15s, background .15s, box-shadow .15s, transform .05s;
+}
+.type:hover, .sev button:hover { border-color: #c3cde0; }
+.type:active, .sev button:active { transform: scale(.98); }
+.type[aria-checked="true"] {
+  border-color: var(--red); background: var(--red-soft); color: var(--red-dark);
+  box-shadow: 0 0 0 3px rgba(225, 29, 72, .14);
+}
+.sev button[aria-checked="true"] { box-shadow: 0 4px 12px rgba(15, 23, 42, .15); }
+.sev button[data-v="1"][aria-checked="true"] { background: #059669; }
+.sev button[data-v="2"][aria-checked="true"] { background: #65a30d; }
+.sev button[data-v="3"][aria-checked="true"] { background: #d97706; }
+.sev button[data-v="4"][aria-checked="true"] { background: #f43f5e; }
+.sev button[data-v="5"][aria-checked="true"] { background: #be123c; }
+
+.pick-map, .track-map { border-radius: 14px; }
+.btn { border-radius: 14px; }
+.btn.outline { border-color: #c9d5ef; color: var(--blue-dark); background: #fff; }
+.btn.outline:hover { background: var(--blue-soft); border-color: var(--blue); }
+.btn.sos {
+  background: linear-gradient(180deg, #f43f5e, var(--red) 60%, var(--red-dark));
+  box-shadow: 0 10px 24px rgba(225, 29, 72, .35); border-radius: 18px;
+}
+
+.card { border-radius: 18px; box-shadow: 0 2px 12px rgba(15, 23, 42, .05); }
+.status { border-width: 2px; }
+.status.wait { background: linear-gradient(180deg, #f3f7ff, var(--blue-soft)); }
+.status.ok { background: linear-gradient(180deg, #f2fbf7, var(--green-soft)); }
+.pulse { background: var(--blue); }
+@keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(37, 99, 235, .5); } 100% { box-shadow: 0 0 0 16px rgba(37, 99, 235, 0); } }
+.call-btn { border-radius: 14px; background: linear-gradient(180deg, #10b981, var(--green)); box-shadow: 0 6px 16px rgba(5, 150, 105, .3); }
+.badge { box-shadow: inset 0 -1px 0 rgba(0, 0, 0, .12); }
+.p1 { background: #be123c; } .p2 { background: #f43f5e; } .p3 { background: #d97706; } .p4 { background: #059669; } .p5 { background: #94a3b8; }
+.req { border-radius: 12px; background: #fff; }
+.req:hover { border-color: #c3cde0; }
+.tag { border-radius: 999px; }
+.alert-toggle, .alert-test { border-radius: 12px; }
+.toast { border-radius: 12px; background: #0f172a; box-shadow: 0 10px 30px rgba(15, 23, 42, .25); }
+.toast.error { background: var(--red); }
+.alarm { background: rgba(5, 150, 105, .92); }
+@keyframes alarm-pulse { 0%, 100% { background: rgba(5, 150, 105, .92); } 50% { background: rgba(4, 120, 87, .97); } }
+.alarm-box { border-radius: 22px; }
+.alarm-box button { border-radius: 14px; }

@@ -723,7 +723,7 @@ function openDialog(title, fields, onSave) {
 }
 
 // ---------- map ----------
-const P_COLORS = { 1: "#b91c1c", 2: "#ef4444", 3: "#1565c0", 4: "#16a34a", 5: "#94a3b8" };
+const P_COLORS = { 1: "#be123c", 2: "#f43f5e", 3: "#d97706", 4: "#059669", 5: "#94a3b8" };   // same as --p1..--p5
 function ensureMap() {
   if (state.map) return true;
   if (!window.L) {

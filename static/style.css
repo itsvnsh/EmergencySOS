@@ -1,23 +1,29 @@
 /* EmergencySOS console - plain CSS, no external libraries */
 :root {
-  /* Medical theme: white background, red = emergency, blue = actions/info, green = available/success */
-  --bg: #ffffff;
-  --soft: #f5f8fc;          /* very light blue-grey for inputs, table rows, boxes */
+  /* Medical theme v2: navy header, blue = actions/info, rose red = emergency,
+     emerald = available/success, amber = warning, violet = the labs; soft grey page */
+  --bg: #f3f6fb;
+  --soft: #f4f7fc;          /* light blue-grey for hover, boxes */
   --card: #ffffff;
-  --ink: #1f2937;
-  --muted: #6b7280;
-  --line: #dbe3ee;
-  --red: #dc2626;
-  --red-soft: #fee2e2;
-  --blue: #1565c0;
-  --blue-dark: #0d47a1;
-  --blue-soft: #e3effc;
-  --green: #16a34a;
-  --green-soft: #dcfce7;
-  --amber: var(--blue);      /* "warning" states now use blue to keep 3 colours */
-  --amber-soft: var(--blue-soft);
-  --p1: #b91c1c; --p2: #ef4444; --p3: #1565c0; --p4: #16a34a; --p5: #94a3b8;
-  --radius: 10px;
+  --ink: #0f172a;
+  --muted: #64748b;
+  --line: #e3e8f1;
+  --navy: #0b1f4b;
+  --navy-2: #12357e;
+  --red: #e11d48;
+  --red-dark: #be123c;
+  --red-soft: #ffe4ea;
+  --blue: #2563eb;
+  --blue-dark: #1e40af;
+  --blue-soft: #e8f0ff;
+  --green: #059669;
+  --green-soft: #d6f5e8;
+  --amber: #d97706;
+  --amber-soft: #fef3c7;
+  --violet: #7c3aed;
+  --p1: #be123c; --p2: #f43f5e; --p3: #d97706; --p4: #059669; --p5: #94a3b8;
+  --radius: 16px;
+  --shadow: 0 1px 2px rgba(15, 23, 42, .04), 0 6px 20px rgba(15, 23, 42, .06);
   --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
 }
 * { box-sizing: border-box; }
@@ -429,3 +435,181 @@ pre.sql { font: 12px/1.45 var(--mono); background: var(--soft); border: 1px soli
 .tab.lab-tab { color: #7c3aed; }
 .tab.lab-tab.active { color: #6d28d9; border-bottom-color: #6d28d9; }
 .tab.only-sysadmin.lab-tab[data-tab="schedlab"] { margin-left: 10px; border-left: 1px solid var(--line); }
+
+/* =====================================================================
+   Design refresh v2: one palette and one set of components for the whole
+   console (and the login page). Only styling: no class names changed.
+   ===================================================================== */
+body {
+  background: var(--bg);
+  font-family: "Segoe UI Variable Text", "Segoe UI", Inter, system-ui, -apple-system, Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+h2 { color: var(--ink); font-weight: 700; letter-spacing: -.01em; }
+.sub-title { color: var(--ink); }
+a { color: var(--blue); }
+
+/* ---- header ---- */
+.topbar {
+  background: linear-gradient(120deg, var(--navy) 0%, var(--navy-2) 58%, #1d4ed8 100%);
+  border-bottom: 0; box-shadow: inset 0 -3px 0 var(--red); padding: 14px 28px 17px;
+}
+.brand h1 { font-size: 20px; font-weight: 750; letter-spacing: -.02em; }
+.brand p, .stat span, #userName small, .live { color: #bfd0f3; }
+.cross { border-radius: 11px; box-shadow: 0 4px 14px rgba(0, 0, 0, .28); }
+.top-stats { gap: 8px; }
+.stat {
+  background: rgba(255, 255, 255, .08); border: 1px solid rgba(255, 255, 255, .14); border-radius: 12px;
+  padding: 6px 12px; text-align: center; min-width: 78px;
+}
+.stat b { font-size: 18px; font-weight: 700; }
+.stat span { font-size: 10px; letter-spacing: .07em; }
+.userbox { border-left-color: rgba(255, 255, 255, .18); }
+.ghost.light { background: rgba(255, 255, 255, .08); color: #fff; border-color: rgba(255, 255, 255, .35); box-shadow: none; }
+.ghost.light:hover { background: rgba(255, 255, 255, .18); border-color: rgba(255, 255, 255, .6); }
+
+/* ---- menu: pill tabs, stays at the top while scrolling ---- */
+.tabs {
+  position: sticky; top: 0; z-index: 30; gap: 4px; padding: 8px 24px;
+  background: rgba(255, 255, 255, .94); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--line); box-shadow: 0 2px 10px rgba(15, 23, 42, .04);
+}
+.tab { border-radius: 999px; padding: 8px 15px; border-bottom: 0; font-weight: 600; color: #475569; transition: background .15s, color .15s; }
+.tab:hover { background: var(--soft); color: var(--ink); }
+.tab.active { background: var(--blue-soft); color: var(--blue-dark); border-bottom: 0; }
+.tab.lab-tab { color: var(--violet); }
+.tab.lab-tab:hover { background: #f5f0ff; color: #6d28d9; }
+.tab.lab-tab.active { background: #efe7ff; color: #6d28d9; }
+.tab.only-sysadmin.lab-tab[data-tab="schedlab"] { margin-left: 14px; border-left: 0; position: relative; overflow: visible; }
+.tab.only-sysadmin.lab-tab[data-tab="schedlab"]::before {
+  content: ""; position: absolute; left: -9px; top: 22%; height: 56%; border-left: 1px solid var(--line);
+}
+
+/* ---- layout and cards ---- */
+main { padding: 26px 28px 64px; }
+.grid { gap: 18px; margin-bottom: 18px; }
+.card {
+  border: 1px solid var(--line); border-top: 1px solid var(--line); border-radius: var(--radius);
+  box-shadow: var(--shadow); padding: 20px 22px; margin-bottom: 18px;
+}
+.card-head { margin-bottom: 12px; }
+.card-head > h2, .card > h2 { display: flex; align-items: center; gap: 9px; }
+.card-head > h2::before, .card > h2::before {
+  content: ""; width: 4px; height: 17px; border-radius: 4px; background: var(--blue); flex: none;
+}
+.card > h2 { margin-bottom: 12px; }
+.pick-card { border-top-color: var(--line); box-shadow: var(--shadow), inset 0 3px 0 var(--red); }
+.pick-card .card-head > h2::before { background: var(--red); }
+#sosForm { margin-top: 2px; }
+.login-card > h2::before { background: var(--red); }
+.hosp.editable { border-top-color: var(--line); box-shadow: var(--shadow), inset 0 3px 0 var(--green); }
+
+/* ---- forms ---- */
+form label, .controls label, .dialog label { color: #475569; font-weight: 600; }
+input, select {
+  background: #fff; border: 1px solid #d5dce8; border-radius: 10px; padding: 9px 12px;
+  transition: border-color .15s, box-shadow .15s;
+}
+input:hover, select:hover { border-color: #b6c2d6; }
+input:focus, select:focus { outline: none; border-color: var(--blue); box-shadow: 0 0 0 3px rgba(37, 99, 235, .18); }
+input[type=range] { box-shadow: none; border: 0; }
+.res-row input { padding: 5px 7px; border-radius: 8px; }
+
+/* ---- buttons ---- */
+button { border-radius: 10px; transition: background .15s, box-shadow .15s, border-color .15s, transform .05s; }
+button:active:not(:disabled) { transform: translateY(1px); }
+.primary { background: var(--blue); box-shadow: 0 1px 2px rgba(37, 99, 235, .3), 0 4px 12px rgba(37, 99, 235, .18); }
+.primary:hover { background: #1d4ed8; }
+.danger { background: linear-gradient(180deg, #f43f5e, var(--red)); box-shadow: 0 4px 14px rgba(225, 29, 72, .28); }
+.danger:hover { background: var(--red-dark); }
+.ghost { background: #fff; border-color: #c9d5ef; color: var(--blue-dark); }
+.ghost:hover { background: var(--blue-soft); border-color: var(--blue); }
+.warn-btn { border-color: #fbc3cf; color: var(--red); }
+.warn-btn:hover { background: var(--red-soft); border-color: var(--red); }
+.icon-btn { border-radius: 7px; }
+.switch { border-radius: 999px; }
+
+/* ---- tables ---- */
+.table-wrap { border: 1px solid var(--line); border-radius: 12px; background: #fff; }
+th {
+  background: #f8fafc; color: #64748b; font-size: 11px; letter-spacing: .06em; padding: 9px 12px;
+  border-bottom: 1px solid var(--line);
+}
+td { padding: 9px 12px; border-bottom: 1px solid #eef2f7; }
+tbody tr:last-child td { border-bottom: 0; }
+tbody tr:hover td { background: #f8fbff; }
+tr.best td, tbody tr.best:hover td { background: var(--green-soft); }
+.matrix th.grp { border-left: 2px solid #fff; }
+
+/* ---- badges and tags ---- */
+.badge { padding: 2px 9px; letter-spacing: .02em; box-shadow: inset 0 -1px 0 rgba(0, 0, 0, .12); }
+.tag { border-radius: 999px; padding: 2px 9px; background: #f1f5f9; color: #334155; border: 1px solid var(--line); }
+.tag.ok, .tag.bad, .tag.warn, .tag.info { border-color: transparent; }
+.tag.warn { color: #b45309; }
+.chip { border-radius: 999px; }
+
+/* ---- result boxes ---- */
+.result { border-radius: 12px; border: 1px solid var(--line); border-left-width: 4px; background: #fbfcfe; padding: 16px; }
+.result.ok { border-color: #a8e2c8; border-left-color: var(--green); background: #f2fbf7; }
+.result.bad { border-color: #fdcdd7; border-left-color: var(--red); background: #fff6f8; }
+.result h3 { font-size: 16px; }
+
+/* ---- automatic-mode queues ---- */
+.aq { border-radius: 12px; padding: 10px 12px; border-left-width: 4px; }
+.aq.urg { background: var(--amber-soft); border-color: var(--amber); }
+.aq.urg span { color: #b45309; }
+
+/* ---- hospitals ---- */
+.hospital-grid { gap: 16px; }
+.hosp h3 { font-size: 16px; }
+.meter { height: 8px; border-radius: 999px; background: #e9eef5; }
+.meter > i { border-radius: 999px; }
+.doc-list { border-top-color: #eef2f7; }
+
+/* ---- dashboard tiles ---- */
+.kpi { border-radius: var(--radius); box-shadow: var(--shadow); position: relative; overflow: hidden; padding: 16px 18px 16px 20px; }
+.kpi::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: var(--blue); }
+.kpi:nth-child(1)::before { background: var(--red); }
+.kpi:nth-child(2)::before { background: var(--blue); }
+.kpi:nth-child(3)::before { background: var(--amber); }
+.kpi:nth-child(4)::before { background: var(--green); }
+.kpi:nth-child(5)::before { background: var(--violet); }
+.kpi-label { font-weight: 600; letter-spacing: .07em; font-size: 11px; }
+.pool-row > div { border-radius: 12px; border: 1px solid #eef2f7; }
+
+/* ---- map, dialogs, toast ---- */
+.map { border-radius: 14px; }
+.hosp-pin { border-radius: 9px; }
+.dialog { border-radius: 18px; padding: 22px; box-shadow: 0 24px 60px rgba(15, 23, 42, .3); }
+.toast { border-radius: 12px; box-shadow: 0 10px 30px rgba(15, 23, 42, .25); background: #0f172a; }
+.toast.error { background: var(--red); }
+code { background: #f1f5f9; border-radius: 6px; }
+pre.sql { border-radius: 10px; background: #f8fafc; }
+.chart-tip { border-radius: 10px; }
+.offline-note { border-radius: 10px; border-left-color: var(--blue); }
+
+/* ---- login page ---- */
+body.login-page {
+  min-height: 100vh;
+  background:
+    radial-gradient(900px 420px at 85% -10%, rgba(37, 99, 235, .12), transparent 60%),
+    radial-gradient(700px 380px at -10% 110%, rgba(225, 29, 72, .08), transparent 60%),
+    var(--bg);
+}
+.login-page main.login-wrap { margin-top: 32px; gap: 20px; }
+.login-card { padding: 24px; }
+.login-card h2 { font-size: 18px; }
+.demo-user { background: #fff; border-radius: 12px; padding: 10px 14px; transition: border-color .15s, box-shadow .15s; }
+.demo-user:hover { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(37, 99, 235, .12); }
+.sos-link {
+  border-radius: 14px; background: linear-gradient(90deg, #fff1f3, #ffe4ea); border-color: #fda4b4; padding: 16px;
+}
+.sos-link:hover { background: linear-gradient(90deg, #ffe4ea, #ffd5de); }
+
+@media (max-width: 640px) {
+  .topbar { padding: 12px 14px 15px; }
+  .tabs { padding: 6px 10px; }
+  main { padding: 16px 14px 48px; }
+  .card { padding: 16px; }
+  .stat { min-width: 64px; padding: 4px 8px; }
+}

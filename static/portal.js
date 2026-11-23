@@ -285,8 +285,8 @@ function drawRoute(s) {
     st.trackLayer = L.layerGroup().addTo(st.trackMap);
   }
   st.trackLayer.clearLayers();
-  const line = L.polyline(s.route.path, { color: "#dc2626", weight: 5, dashArray: s.route.source === "ROAD" ? null : "8 8" }).addTo(st.trackLayer);
-  L.circleMarker(s.route.path[0], { radius: 8, color: "#fff", weight: 2, fillColor: "#dc2626", fillOpacity: 1 }).addTo(st.trackLayer).bindPopup("Patient");
+  const line = L.polyline(s.route.path, { color: "#e11d48", weight: 5, dashArray: s.route.source === "ROAD" ? null : "8 8" }).addTo(st.trackLayer);
+  L.circleMarker(s.route.path[0], { radius: 8, color: "#fff", weight: 2, fillColor: "#e11d48", fillOpacity: 1 }).addTo(st.trackLayer).bindPopup("Patient");
   L.marker(s.route.path[s.route.path.length - 1]).addTo(st.trackLayer).bindPopup(esc(s.allocation.hospital_name));
   setTimeout(() => { st.trackMap.invalidateSize(); st.trackMap.fitBounds(line.getBounds(), { padding: [24, 24] }); }, 0);
 }

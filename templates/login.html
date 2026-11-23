@@ -5,7 +5,7 @@
   <meta name="csrf-token" content="{{ csrf_token() }}">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Log in · EmergencySOS</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <link rel="stylesheet" href="{{ asset('style.css') }}">
 </head>
 <body class="login-page">
 <header class="topbar">
@@ -46,9 +46,9 @@
       {% endfor %}
     </div>
     <dl class="kv role-help">
-      <dt>Dispatcher</dt><dd>queue, dispatch, release, map, labs</dd>
+      <dt>Dispatcher</dt><dd>queue, dispatch or choose the hospital, release, map, dashboard</dd>
       <dt>Hospital admin</dt><dd>edit beds, equipment, doctors, hospital details, patients</dd>
-      <dt>System admin</dt><dd>all hospitals, add hospitals, manage users, reset data</dd>
+      <dt>System admin</dt><dd>all hospitals, add hospitals, manage users, reset data, the three labs</dd>
       <dt>Patient</dt><dd>send SOS and follow your own requests</dd>
     </dl>
   </div>
