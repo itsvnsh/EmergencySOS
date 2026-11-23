@@ -460,16 +460,19 @@ class ApiTests(unittest.TestCase):
         self.assertGreater(len(self.c.get("/api/audit").get_json()["log"]), 0)
 
     def test_lab_on_real_patients(self):
+        from app import app
+        adm = app.test_client()                     # the labs are for the system admin login
+        login(adm, "admin", "admin123")
         # no patients yet -> friendly error
-        self.assertEqual(self.c.post("/api/labs/scheduler", json={"source": "real"}).status_code, 400)
+        self.assertEqual(adm.post("/api/labs/scheduler", json={"source": "real"}).status_code, 400)
         for name, etype, sev in [("Fever", "GENERAL", 2), ("Heart", "CARDIAC", 5), ("Burn", "BURN", 3)]:
             self.c.post("/api/sos", json={"patient_name": name, "latitude": 30.32, "longitude": 78.04,
                                           "emergency_type": etype, "severity": sev})
         self.c.post("/api/dispatch", json={})                     # Heart gets an active allocation
-        wl = self.c.get("/api/labs/scheduler/workload?source=real").get_json()["workload"]
+        wl = adm.get("/api/labs/scheduler/workload?source=real").get_json()["workload"]
         self.assertEqual(sorted(w["patient_name"] for w in wl), ["Burn", "Fever", "Heart"])
         self.assertIn("ACTIVE ALLOCATION", [w["status"] for w in wl])
-        lab = self.c.post("/api/labs/scheduler", json={"source": "real"}).get_json()
+        lab = adm.post("/api/labs/scheduler", json={"source": "real"}).get_json()
         auto = next(r for r in lab["results"] if r["policy"] == "AUTO")
         first = next(g for g in auto["gantt"] if g["id"])
         self.assertEqual(next(w["patient_name"] for w in wl if w["id"] == first["id"]), "Heart")
@@ -990,7 +993,7 @@ class BankersDatabaseTests(unittest.TestCase):
     def test_bankers_api(self):
         from app import app
         c = app.test_client()
-        login(c, "dispatcher", "dispatch123")
+        login(c, "admin", "admin123")
         req = self._cardiac()
         r = c.post("/api/bankers", json={"hospital_id": 1, "request_id": req["request_id"]}).get_json()
         self.assertTrue(r["ok"])
@@ -1085,7 +1088,7 @@ class DbObjectsTests(unittest.TestCase):
     def test_db_api(self):
         from app import app
         c = app.test_client()
-        login(c, "dispatcher", "dispatch123")
+        login(c, "admin", "admin123")
         cat = c.get("/api/db/objects").get_json()
         self.assertEqual(len(cat["views"]), 5)
         self.assertEqual(c.get("/api/db/view/v_doctor_load").status_code, 200)
@@ -1185,7 +1188,7 @@ class DeadlockLabTests(unittest.TestCase):
     def test_api(self):
         from app import app
         c = app.test_client()
-        login(c, "dispatcher", "dispatch123")
+        login(c, "admin", "admin123")
         r = c.post("/api/labs/deadlock", json={"ordered": True}).get_json()
         self.assertTrue(r["ok"])
         self.assertFalse(r["deadlock"])
@@ -1892,6 +1895,47 @@ class ManualHospitalChoiceTests(unittest.TestCase):
         login(patient, "patient", "patient123")
         self.assertEqual(patient.get(f"/api/hospital-options/{rid}").status_code, 403)
         self.assertEqual(self.c.post("/api/dispatch", json={"hospital_id": hid}).status_code, 400)  # which patient?
+
+
+
+# ---------------------------------------------------------------- labs: system admin only
+@unittest.skipUnless(DB_OK, "MySQL not reachable")
+class LabsAdminOnlyTests(unittest.TestCase):
+    LAB_CALLS = [("get", "/api/labs/scheduler/workload?source=sample", None),
+                 ("post", "/api/labs/scheduler", {"source": "sample"}),
+                 ("post", "/api/labs/race", {"locked": True, "clients": 2}),
+                 ("post", "/api/labs/deadlock", {"ordered": True}),
+                 ("post", "/api/bankers", {"hospital_id": 1}),
+                 ("get", "/api/db/objects", None),
+                 ("get", "/api/db/view/v_doctor_load", None),
+                 ("get", "/api/db/report/1", None),
+                 ("get", "/api/db/history/1", None)]
+
+    def _call(self, c, method, url, body):
+        return c.get(url) if method == "get" else c.post(url, json=body)
+
+    def test_only_the_system_admin_can_use_the_labs(self):
+        from app import app
+        for user, pw in (("dispatcher", "dispatch123"), ("maxadmin", "admin123"), ("patient", "patient123")):
+            c = app.test_client()
+            login(c, user, pw)
+            for method, url, body in self.LAB_CALLS:
+                self.assertEqual(self._call(c, method, url, body).status_code, 403, f"{user} {url}")
+        self.assertEqual(app.test_client().get("/api/db/objects").status_code, 401)
+        adm = app.test_client()
+        login(adm, "admin", "admin123")
+        for method, url, body in self.LAB_CALLS:
+            self.assertNotIn(self._call(adm, method, url, body).status_code, (401, 403), url)
+
+    def test_lab_tabs_are_last_and_admin_only(self):
+        with open(os.path.join(HERE, "templates", "index.html"), encoding="utf-8") as f:
+            html = f.read()
+        import re
+        tabs = re.findall(r'<button class="tab([^"]*)" data-tab="(\w+)"', html)
+        names = [name for _, name in tabs]
+        self.assertEqual(names[-3:], ["schedlab", "oslab", "database"])
+        for cls, name in tabs:
+            self.assertEqual("only-sysadmin" in cls, name in ("schedlab", "oslab", "database", "users"), name)
 
 
 if __name__ == "__main__":

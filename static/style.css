@@ -424,3 +424,8 @@ pre.sql { font: 12px/1.45 var(--mono); background: var(--soft); border: 1px soli
 .pick-row label { flex: 1 1 260px; }
 #pickTable tr.cannot td { color: var(--muted); }
 #pickTable tr.best td { background: var(--green-soft); }
+
+/* the three labs: system admin only, last in the menu, set apart from the everyday tabs */
+.tab.lab-tab { color: #7c3aed; }
+.tab.lab-tab.active { color: #6d28d9; border-bottom-color: #6d28d9; }
+.tab.only-sysadmin.lab-tab[data-tab="schedlab"] { margin-left: 10px; border-left: 1px solid var(--line); }

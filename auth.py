@@ -113,6 +113,21 @@ def current_user_id():
     return u["user_id"] if u else None
 
 
+def require_system_admin_login(fn):
+    """Decorator: only the system admin (hospital admin with no hospital) may call this.
+    Used for the Scheduler Lab, Deadlock Lab and Database tabs, which are for the
+    evaluation / viva, not for day-to-day dispatching."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        u = current_user()
+        if not u:
+            return jsonify({"ok": False, "error": "Please log in first", "login_required": True}), 401
+        if not is_system_admin(u):
+            return jsonify({"ok": False, "error": "Not allowed: the labs are only for the system admin login"}), 403
+        return fn(*args, **kwargs)
+    return wrapper
+
+
 def require_role(*roles):
     """Decorator: the caller must be logged in, and (if roles are given) have one of them."""
     def deco(fn):

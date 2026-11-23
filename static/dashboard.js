@@ -67,7 +67,7 @@ function renderScheduling(s) {
     <div class="hchart">${rows}</div>
     <p class="muted small">Same patients, six algorithms (simulated, non-preemptive). Shorter is better.
       ${hasCritical ? "" : "None of these patients is critical, so the orange bars are 0."}
-      Full table and all Gantt charts: <a href="#" data-goto="schedlab">Scheduler Lab</a>.</p>`;
+      ${state.sysadmin ? 'Full table and all Gantt charts: <a href="#" data-goto="schedlab">Scheduler Lab</a>.' : ""}</p>`;
 }
 
 // ---------- occupancy: one bar per hospital ----------

@@ -156,10 +156,12 @@ Run it again any time to reset everything. The **Reset simulated data** button (
 
 | Username | Password | Role | Can do |
 |---|---|---|---|
-| `dispatcher` | `dispatch123` | Dispatcher | queue, dispatch, release, cancel requests, map, labs |
-| `admin` | `admin123` | Hospital admin (system) | edit **every** hospital, add/delete hospitals, manage users, reset data |
+| `dispatcher` | `dispatch123` | Dispatcher | queue, dispatch (or choose the hospital), release, cancel requests, map, dashboard |
+| `admin` | `admin123` | Hospital admin (system) | edit **every** hospital, add/delete hospitals, manage users, reset data, and the **Scheduler Lab, Deadlock Lab and Database** tabs |
 | `maxadmin` | `admin123` | Hospital admin | edit **Max Super Speciality Hospital only** (others read-only) |
 | `patient` | `patient123` | Patient | send SOS, follow own requests |
+
+The three lab tabs (**Scheduler Lab, Deadlock Lab, Database**) are for the evaluation and viva, not for everyday dispatching: they are shown only to the `admin` login, last in the menu, and their API refuses every other login (403).
 
 Passwords are stored as salted scrypt hashes, never as plain text. Change these accounts before any real use.
 **Sending an SOS needs no login:** in an emergency nobody should be stopped by a login screen. An anonymous sender gets a private tracking link instead.
@@ -218,7 +220,7 @@ Start with `CASE_TIME_SCALE=0.1` so automatic completion is visible within a min
 9. **Admin changes affect routing**: with Max's ICU at 0, dispatch another cardiac case and Max drops out of the ranking.
 10. **Patients**: on *Queue & Patients*, **Edit** fixes a patient's name or phone; **Cancel** (dispatcher) removes a waiting request.
 11. **Audit log tab**: every SOS, allocation, rollback, release, auto-completion, admin change and login, with **who** did it.
-12. **Scheduler Lab**: choose **Sample workload** and click **Run comparison**. Expected numbers:
+12. **Scheduler Lab** (log in as `admin`; the three lab tabs are last in the menu): choose **Sample workload** and click **Run comparison**. Expected numbers:
 
    | Policy | Avg wait | Avg turnaround | Critical (P1–P2) wait | Max wait |
    |---|---|---|---|---|
@@ -401,13 +403,13 @@ Who can call it: \* anyone, **P** patient, **D** dispatcher, **A** hospital admi
 | POST | `/api/admin/reset` | S | reload simulated data |
 | GET | `/api/audit` | D, A | audit log |
 | POST | `/api/demo/seed` | D | add 6 demo requests |
-| POST | `/api/labs/scheduler` | D, A | compare policies |
-| POST | `/api/labs/race` | D, A | `{locked, clients, delay_ms, engine: python\|procedure}` run the race |
-| POST | `/api/labs/deadlock` | D, A | `{ordered}` deadlock detection demo (wait-for graph, victim, retry) |
-| POST | `/api/bankers` | D, A | `{hospital_id, request_id?, available?}` Banker's matrices, safe sequence, verdict (read-only) |
-| GET | `/api/db/objects` | D, A | views, triggers, procedures with their SQL and whether they are installed |
-| GET | `/api/db/view/<name>` · `/api/db/report/<hospital_id>` | D, A | rows of a view · `CALL sp_hospital_report` |
-| GET | `/api/db/history/<request_id>` · POST `/api/db/trigger-demo` | D, A | trigger-written status history · state-machine trigger demo |
+| POST | `/api/labs/scheduler` | S | compare policies |
+| POST | `/api/labs/race` | S | `{locked, clients, delay_ms, engine: python\|procedure}` run the race |
+| POST | `/api/labs/deadlock` | S | `{ordered}` deadlock detection demo (wait-for graph, victim, retry) |
+| POST | `/api/bankers` | S | `{hospital_id, request_id?, available?}` Banker's matrices, safe sequence, verdict (read-only) |
+| GET | `/api/db/objects` | S | views, triggers, procedures with their SQL and whether they are installed |
+| GET | `/api/db/view/<name>` · `/api/db/report/<hospital_id>` | S | rows of a view · `CALL sp_hospital_report` |
+| GET | `/api/db/history/<request_id>` · POST `/api/db/trigger-demo` | S | trigger-written status history · state-machine trigger demo |
 | GET | `/api/dashboard?source=auto\|real\|sample` | D, A | KPIs, occupancy, cases per hour, real wait per priority, scheduling comparison, pool counters |
 | GET | `/api/pool` | D, A | connection-pool counters |
 

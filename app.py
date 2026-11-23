@@ -71,7 +71,7 @@ import routing
 import scheduler
 import security
 import transaction_manager as tm
-from auth import require_role
+from auth import require_role, require_system_admin_login
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -895,14 +895,14 @@ def _lab_workload(source):
 
 
 @app.get("/api/labs/scheduler/workload")
-@require_role(*STAFF)
+@require_system_admin_login
 def lab_workload():
     source = request.args.get("source", "real")
     return jsonify({"ok": True, "source": source, "workload": _lab_workload(source)})
 
 
 @app.post("/api/labs/scheduler")
-@require_role(*STAFF)
+@require_system_admin_login
 def lab_scheduler():
     d = body()
     aging = d.get("aging_interval", config.AGING_INTERVAL_MIN)
@@ -920,7 +920,7 @@ def lab_scheduler():
 
 
 @app.post("/api/labs/race")
-@require_role(*STAFF)
+@require_system_admin_login
 def lab_race():
     d = body()
     result = concurrency_lab.run_race(clients=int(d.get("clients", 6)),
@@ -931,7 +931,7 @@ def lab_race():
 
 
 @app.post("/api/labs/deadlock")
-@require_role(*STAFF)
+@require_system_admin_login
 def lab_deadlock():
     return jsonify({"ok": True, **deadlock_lab.run(ordered=bool(body().get("ordered", False)))})
 
@@ -967,7 +967,7 @@ def pool_status():
 # Banker's algorithm (deadlock avoidance)
 # ---------------------------------------------------------------------------
 @app.post("/api/bankers")
-@require_role(*STAFF)
+@require_system_admin_login
 def bankers_state():
     """Banker's matrices + safety check for one hospital. Read-only: `available` only
     pretends ("what if only N were free?"), nothing in the database changes."""
@@ -1002,27 +1002,27 @@ def _cols(rows):
 
 
 @app.get("/api/db/objects")
-@require_role(*STAFF)
+@require_system_admin_login
 def db_catalog():
     return jsonify({"ok": True, **db_objects.catalog()})
 
 
 @app.get("/api/db/view/<name>")
-@require_role(*STAFF)
+@require_system_admin_login
 def db_view(name):
     rows = db_objects.view_rows(name)
     return jsonify({"ok": True, "view": name, "rows": rows, "columns": _cols(rows)})
 
 
 @app.get("/api/db/report/<int:hospital_id>")
-@require_role(*STAFF)
+@require_system_admin_login
 def db_report(hospital_id):
     r = db_objects.hospital_report(hospital_id)
     return jsonify({"ok": True, **r, "units_columns": _cols(r["units"]), "doctors_columns": _cols(r["doctors"])})
 
 
 @app.get("/api/db/history/<int:request_id>")
-@require_role(*STAFF)
+@require_system_admin_login
 def db_history(request_id):
     req = db.query_one("SELECT request_id, patient_name, status FROM sos_requests "
                        "WHERE request_id = %s AND is_lab = 0", (request_id,))
@@ -1034,7 +1034,7 @@ def db_history(request_id):
 
 
 @app.post("/api/db/trigger-demo")
-@require_role(*STAFF)
+@require_system_admin_login
 def db_trigger_demo():
     if not db_objects.triggers_installed():
         raise ApiError(f"Triggers are not installed. {init_db.TRIGGER_HELP}", 409)
