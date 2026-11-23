@@ -253,7 +253,7 @@ function renderStatus(s) {
     card = `<div class="card status ok"><div class="big">${esc(t("assigned"))}</div>
       <p><b>${esc(a.hospital_name)}</b><br>${esc(a.hospital_area)}</p>
       <p>${s.route ? t("route", { km: +s.route.km, min: Math.round(s.route.minutes) }) + (s.route.source === "ROAD" ? "" : esc(t("estimate"))) : ""}</p>
-      ${a.hospital_phone ? `<a class="call-btn" href="tel:${esc(a.hospital_phone.replace(/[^0-9+]/g, ""))}">&#9742; ${esc(t("call"))} ${esc(a.hospital_phone)}</a>` : ""}</div>`;
+      ${a.hospital_phone ? `<a class="call-btn" href="tel:${esc(a.hospital_phone.replace(/[^0-9+]/g, ""))}">${esc(t("call"))} ${esc(a.hospital_phone)}</a>` : ""}</div>`;
   } else if (r.status === "COMPLETED") {
     card = `<div class="card status done"><div class="big">${esc(t("completed"))}</div>
       <p>${a ? t("treatedAt", { h: esc(a.hospital_name) }) : ""} ${esc(t("takeCare"))}</p></div>`;
@@ -476,7 +476,7 @@ function hospitalAssignedAlert(s, test = false) {
   if (!test) {
     st.alarmTimer = setInterval(alarmRound, ALARM_REPEAT_MS);
     st.pendingAlarm = document.hidden;          // in the background: play again when the page is back
-    document.title = "✅ " + t("alertTitle");
+    document.title = t("alertTitle");
     if (document.hidden && "Notification" in window && Notification.permission === "granted") {
       try {
         new Notification(t("alertTitle"), { tag: "sos-assigned", body: t("notifyBody", {
@@ -492,7 +492,7 @@ $("#alarmStop").addEventListener("click", () => stopAlarm(true));
 function renderAlertBtn() {
   const b = $("#alertBtn");
   const needTap = st.alerts && !st.audioReady;
-  b.textContent = !st.alerts ? "🔕 " + t("alertsOff") : needTap ? "🔔 " + t("tapToEnable") : "🔔 " + t("alertsOn");
+  b.textContent = !st.alerts ? t("alertsOff") : needTap ? t("tapToEnable") : t("alertsOn");
   b.setAttribute("aria-pressed", String(st.alerts));
   b.classList.toggle("off", !st.alerts);
   b.classList.toggle("needtap", needTap);
