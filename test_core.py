@@ -1761,16 +1761,36 @@ class PortalAlarmTests(unittest.TestCase):
             self.html = f.read()
 
     def test_alarm_uses_an_audio_clip_and_repeats(self):
-        self.assertIn('new Blob([buf], { type: "audio/wav" })', self.js)     # plays on iPhones in silent mode
+        self.assertIn('"/static/sounds/chime.wav', self.js)                 # a real audio file (iPhone, silent mode)
         self.assertIn("setInterval(alarmRound, ALARM_REPEAT_MS)", self.js)   # repeats until OK
         self.assertIn("st.pendingAlarm", self.js)                            # replays after the screen was off
         # unlock on events that count as a user tap on phones (touchend/click), not touchstart/pointerdown
         self.assertIn('["touchend", "click", "keydown"].forEach', self.js)
         self.assertNotIn('addEventListener("pointerdown", unlockAudio', self.js)
         # iPhone: the unlock must be a real (unmuted) play of a silent clip on the SAME element
-        self.assertIn("el.src = st.silenceUrl;", self.js)
+        self.assertIn("el.src = SOUND.silence;", self.js)
         self.assertNotIn("el.muted = true;", self.js)
         self.assertIn('id="alarmSound"', self.html)
+        self.assertIn('id="alarmHear"', self.html)                           # tap-to-hear if still blocked
+        # Test plays the chime INSIDE the tap, and a new alert must not cut off that chime
+        self.assertIn("st.testChime = playChime();", self.js)
+        self.assertIn("stopAlarm(false);", self.js)
+
+    def test_sound_files(self):
+        import wave
+        for name, min_sec in (("chime.wav", 1.0), ("silence.wav", 0.1)):
+            with wave.open(os.path.join(HERE, "static", "sounds", name), "rb") as w:
+                self.assertEqual((w.getnchannels(), w.getsampwidth()), (1, 2), name)    # mono 16-bit PCM
+                self.assertGreaterEqual(w.getnframes() / w.getframerate(), min_sec, name)
+
+    @unittest.skipUnless(DB_OK, "MySQL not reachable")
+    def test_sound_served_with_ranges(self):
+        # iPhone Safari loads audio with Range requests: the server must answer 206
+        from app import app
+        r = app.test_client().get("/static/sounds/chime.wav", headers={"Range": "bytes=0-99"})
+        self.assertEqual(r.status_code, 206)
+        self.assertIn("audio/", r.headers["Content-Type"])
+        r.close()
         for el in ('id="alarm"', 'id="alarmStop"', 'id="alarmNoVibrate"'):
             self.assertIn(el, self.html)
 

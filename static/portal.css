@@ -170,3 +170,6 @@ html[lang="hi"] body { font-family: "Nirmala UI", "Noto Sans Devanagari", "Manga
 @keyframes needtap { 50% { box-shadow: 0 0 0 4px rgba(220, 38, 38, .2); } }
 .alarm-box .alarm-sound { color: var(--green); font-weight: 600; }
 .alarm-box .alarm-sound.bad { color: var(--red-dark); }
+.alarm-box .alarm-hear {
+  margin-top: 2px; background: #fff; color: var(--green); border: 2px solid var(--green); min-height: 48px;
+}

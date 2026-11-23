@@ -115,6 +115,7 @@ app = Flask(__name__)
 app.json = JSONProvider(app)
 app.secret_key = _secret_key()
 app.config.update(SEND_FILE_MAX_AGE_DEFAULT=0,      # browsers re-check static files (no stale JS on phones)
+                  TEMPLATES_AUTO_RELOAD=True,       # an edited page is served at once, in step with its scripts
                   SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax",
                   PERMANENT_SESSION_LIFETIME=dt.timedelta(hours=12))
 

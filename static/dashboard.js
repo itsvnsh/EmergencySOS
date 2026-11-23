@@ -10,19 +10,20 @@ const fmtMin = (v) => (v == null ? "-" : `${(+v).toFixed(1)} min`);
 const tip = $("#chartTip");
 document.addEventListener("pointerover", (e) => {
   const el = e.target.closest?.("[data-tip]");
+  if (!tip) return;
   if (!el || !el.closest("#tab-dashboard")) { tip.classList.remove("show"); return; }
   tip.innerHTML = el.dataset.tip;
   tip.classList.add("show");
 });
 document.addEventListener("pointermove", (e) => {
-  if (!tip.classList.contains("show")) return;
+  if (!tip || !tip.classList.contains("show")) return;
   const pad = 14, w = tip.offsetWidth, h = tip.offsetHeight;
   let x = e.clientX + pad, y = e.clientY + pad;
   if (x + w > innerWidth - 8) x = e.clientX - w - pad;
   if (y + h > innerHeight - 8) y = e.clientY - h - pad;
   tip.style.transform = `translate(${Math.max(8, x)}px, ${Math.max(8, y)}px)`;
 });
-document.addEventListener("scroll", () => tip.classList.remove("show"), true);
+document.addEventListener("scroll", () => tip?.classList.remove("show"), true);
 
 // a "nice" axis maximum: 1, 2, 5 x 10^n
 function niceMax(v) {

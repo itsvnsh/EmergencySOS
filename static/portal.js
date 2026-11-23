@@ -9,7 +9,8 @@ const nice = (s) => esc(String(s ?? "").replace(/_/g, " ").toLowerCase().replace
 
 const st = { meta: null, user: null, type: null, sev: 3, map: null, pin: null, track: null, trackMap: null, es: null, poll: null,
   lang: "en", last: null, lastStatus: null, alerts: true, audio: null, locLabel: null,
-  chime: null, audioReady: false, alarmTimer: null, alarmRounds: 0, pendingAlarm: false, lastAlert: null };
+  chime: null, audioReady: false, alarmTimer: null, alarmRounds: 0, pendingAlarm: false, lastAlert: null,
+  unlocking: false, chimePlaying: false, testChime: null };
 
 // localStorage can be missing or blocked (private mode, some embeds): never let it break the page
 const store = {
@@ -327,42 +328,19 @@ $("#myList").addEventListener("click", (e) => {
 const ALARM_REPEAT_MS = 4000, ALARM_MAX_ROUNDS = 8;
 const canVibrate = typeof navigator.vibrate === "function";
 
-function makeChimeUrl() {
-  const rate = 22050, total = Math.ceil(rate * 1.6), pcm = new Float32Array(total);
-  [0, 0.75].forEach((rep) => [880, 1175, 1568].forEach((f, i) => {       // three rising tones, twice
-    const s0 = Math.floor((rep + i * 0.18) * rate), n = Math.floor(0.38 * rate);
-    for (let k = 0; k < n && s0 + k < total; k++) {
-      const tt = k / rate, env = Math.min(1, tt / 0.015) * Math.exp(-tt * 8);
-      pcm[s0 + k] += Math.sin(2 * Math.PI * f * tt) * env * 0.5;
-    }
-  }));
-  return wavUrl(pcm, rate);
-}
-
-function wavUrl(pcm, rate) {
-  const total = pcm.length;
-  const buf = new ArrayBuffer(44 + total * 2), v = new DataView(buf);
-  const str = (o, s) => [...s].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
-  str(0, "RIFF"); v.setUint32(4, 36 + total * 2, true); str(8, "WAVE"); str(12, "fmt ");
-  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);          // PCM, mono
-  v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
-  str(36, "data"); v.setUint32(40, total * 2, true);
-  for (let k = 0; k < total; k++) v.setInt16(44 + k * 2, Math.max(-1, Math.min(1, pcm[k])) * 32767, true);
-  return URL.createObjectURL(new Blob([buf], { type: "audio/wav" }));
-}
+// The chime is a real file served by the app (static/sounds/chime.wav). iPhone Safari plays
+// a normal audio file far more reliably than sound generated inside the page.
+const SOUND = { chime: "/static/sounds/chime.wav?v=2", silence: "/static/sounds/silence.wav?v=2" };
 
 // ONE audio element for the whole page. iPhones only let a page play sound on an element
-// that the user started with a tap, so the first tap plays a short SILENT clip on it
-// (unmuted: a muted play does not count), then the chime is loaded into the same element.
+// that the user started with a tap. The first tap plays a short SILENT file on it (unmuted:
+// a muted play does not count); later the chime is loaded into the same element.
 function chimeElement() {
   if (!st.chime) {
     try {
-      st.chimeUrl = makeChimeUrl();
-      st.silenceUrl = wavUrl(new Float32Array(4410), 22050);       // 0.2 s of silence
-      st.chime = new Audio();
+      st.chime = new Audio(SOUND.chime);
       st.chime.preload = "auto";
       st.chime.setAttribute("playsinline", "");
-      st.chime.src = st.chimeUrl;
     } catch { st.chime = null; }
   }
   return st.chime;
@@ -372,10 +350,10 @@ function chimeElement() {
 function unlockAudio() {
   try { if (navigator.audioSession) navigator.audioSession.type = "playback"; } catch { /* older browsers */ }
   const el = chimeElement();
-  if (el && !st.audioReady && !st.unlocking && !st.alarmTimer) {
+  if (el && !st.audioReady && !st.unlocking && !st.alarmTimer && !st.chimePlaying) {
     st.unlocking = true;
     el.muted = false;
-    el.src = st.silenceUrl;
+    el.src = SOUND.silence;
     let p;
     try { p = el.play(); } catch (e) { p = Promise.reject(e); }
     st.unlockPromise = Promise.resolve(p)
@@ -383,9 +361,11 @@ function unlockAudio() {
       .catch((e) => { st.audioError = (e && e.name) || "blocked"; })
       .finally(() => {
         st.unlocking = false;
-        el.pause();
-        el.src = st.chimeUrl;
-        el.load();
+        if (!st.chimePlaying) {                  // never cut off a chime that started meanwhile
+          el.pause();
+          el.src = SOUND.chime;
+          el.load();
+        }
         renderAlertBtn();
       });
   }
@@ -423,18 +403,21 @@ function beepWebAudio() {
   return ctx.state === "running";
 }
 
-// Plays the chime; resolves to true if the phone accepted it.
+// Plays the chime; resolves to true if the phone accepted it. Call it straight from a tap
+// handler when there is one (Test, tap-to-hear): a play started inside the tap is always allowed.
 function playChime() {
   const el = chimeElement();
   if (!el) return Promise.resolve(beepWebAudio());
-  if (st.unlocking && st.unlockPromise) return st.unlockPromise.then(playChime);   // let the unlock finish first
+  st.chimePlaying = true;
   el.muted = false;
-  if (el.src !== st.chimeUrl) el.src = st.chimeUrl;
+  if (!el.src.includes("chime.wav")) el.src = SOUND.chime;
   try { el.currentTime = 0; } catch { /* not loaded yet */ }
   let p;
   try { p = el.play(); } catch (e) { p = Promise.reject(e); }
-  return Promise.resolve(p).then(() => { st.audioError = null; return true; })
-    .catch((e) => { st.audioError = (e && e.name) || "blocked"; return beepWebAudio(); });
+  return Promise.resolve(p)
+    .then(() => { st.audioError = null; st.audioReady = true; return true; })
+    .catch((e) => { st.audioError = (e && e.name) || "blocked"; return beepWebAudio(); })
+    .finally(() => { setTimeout(() => { st.chimePlaying = false; }, 1700); });
 }
 
 function buzz() {
@@ -442,11 +425,23 @@ function buzz() {
   try { return navigator.vibrate([500, 200, 500, 200, 900]); } catch { return false; }
 }
 
-function stopAlarm() {
+// shows on the alert whether the sound played (works even on an older copy of the page)
+function showSoundResult(ok) {
+  const line = $("#alarmSound");
+  if (line) {
+    line.textContent = ok ? t("soundOk") : t("soundBlocked", { why: st.audioError || "?" });
+    line.classList.toggle("bad", !ok);
+  }
+  $("#alarmHear")?.classList.toggle("hidden", ok);
+}
+
+// silence = true when the patient taps OK; false when a new alert replaces the old one
+// (then a chime that was just started inside the tap must keep playing)
+function stopAlarm(silence = true) {
   clearInterval(st.alarmTimer);
   st.alarmTimer = null;
   st.pendingAlarm = false;
-  if (st.chime) { st.chime.pause(); st.chime.currentTime = 0; }
+  if (silence && st.chime && !st.unlocking) { st.chime.pause(); try { st.chime.currentTime = 0; } catch { /* ignore */ } }
   if (canVibrate) { try { navigator.vibrate(0); } catch { /* ignore */ } }
   $("#alarm").classList.add("hidden");
 }
@@ -454,11 +449,11 @@ function stopAlarm() {
 function alarmRound() {
   st.alarmRounds = (st.alarmRounds || 0) + 1;
   if (st.alarmRounds > ALARM_MAX_ROUNDS) { stopAlarm(); return; }
-  playChime().then((ok) => {
+  const chime = st.testChime || playChime();
+  st.testChime = null;
+  chime.then((ok) => {
     st.lastAlert.sound = st.lastAlert.sound || ok;
-    const line = $("#alarmSound");
-    line.textContent = ok ? t("soundOk") : t("soundBlocked", { why: st.audioError || "?" });
-    line.classList.toggle("bad", !ok);
+    showSoundResult(ok);
   });
   st.lastAlert.buzz = buzz() || st.lastAlert.buzz;
   const card = $("#statusCard");
@@ -467,14 +462,14 @@ function alarmRound() {
 
 function hospitalAssignedAlert(s, test = false) {
   if (!st.alerts && !test) return null;
-  stopAlarm();
+  stopAlarm(false);
   st.lastAlert = { sound: false, buzz: false, at: Date.now(), test };
   const a = s?.allocation;
   $("#alarmTitle").textContent = test ? t("testAlert") : t("assigned");
   $("#alarmText").textContent = test
     ? t(canVibrate ? "testHint" : "testHintNoVibrate")
     : `${a?.hospital_name || ""}${s?.route ? " · " + t("aboutMin", { min: Math.round(s.route.minutes) }) : ""}`;
-  $("#alarmNoVibrate").classList.toggle("hidden", canVibrate);
+  $("#alarmNoVibrate")?.classList.toggle("hidden", canVibrate);
   $("#alarm").classList.remove("hidden");
   st.alarmRounds = 0;
   alarmRound();
@@ -492,7 +487,7 @@ function hospitalAssignedAlert(s, test = false) {
   return st.lastAlert;
 }
 
-$("#alarmStop").addEventListener("click", stopAlarm);
+$("#alarmStop").addEventListener("click", () => stopAlarm(true));
 
 function renderAlertBtn() {
   const b = $("#alertBtn");
@@ -521,8 +516,13 @@ $("#alertBtn").addEventListener("click", () => {
   renderAlertBtn();
 });
 $("#testAlertBtn").addEventListener("click", () => {
-  unlockAudio();
-  setTimeout(() => hospitalAssignedAlert(st.last, true), 80);
+  st.testChime = playChime();                   // started inside the tap: always allowed
+  hospitalAssignedAlert(st.last, true);
+});
+// a tap on the alert itself plays the chime too (inside the tap, so it cannot be blocked)
+$("#alarmHear")?.addEventListener("click", (e) => {
+  e.stopPropagation();
+  playChime().then(showSoundResult);
 });
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) return;
