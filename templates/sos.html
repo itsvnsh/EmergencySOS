@@ -7,7 +7,7 @@
   <meta name="theme-color" content="#dc2626">
   <title>Send SOS · EmergencySOS</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='vendor/leaflet/leaflet.css') }}">
-  <link rel="stylesheet" href="{{ url_for('static', filename='portal.css') }}">
+  <link rel="stylesheet" href="{{ asset('portal.css') }}">
 </head>
 <body>
 <header class="bar">
@@ -79,14 +79,15 @@
     <div class="alarm-icon" aria-hidden="true">&#127973;</div>
     <b id="alarmTitle"></b>
     <span id="alarmText"></span>
+    <small id="alarmSound" class="alarm-sound"></small>
     <small id="alarmNoVibrate" class="hidden" data-i18n="noVibrate"></small>
     <button type="button" id="alarmStop" data-i18n="alarmStop">OK</button>
   </div>
 </div>
 <div id="toast" class="toast" role="status"></div>
 <script src="{{ url_for('static', filename='vendor/leaflet/leaflet.js') }}"></script>
-<script src="{{ url_for('static', filename='offline_map.js') }}"></script>
-<script src="{{ url_for('static', filename='portal_i18n.js') }}"></script>
-<script src="{{ url_for('static', filename='portal.js') }}"></script>
+<script src="{{ asset('offline_map.js') }}"></script>
+<script src="{{ asset('portal_i18n.js') }}"></script>
+<script src="{{ asset('portal.js') }}"></script>
 </body>
 </html>

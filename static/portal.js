@@ -336,6 +336,11 @@ function makeChimeUrl() {
       pcm[s0 + k] += Math.sin(2 * Math.PI * f * tt) * env * 0.5;
     }
   }));
+  return wavUrl(pcm, rate);
+}
+
+function wavUrl(pcm, rate) {
+  const total = pcm.length;
   const buf = new ArrayBuffer(44 + total * 2), v = new DataView(buf);
   const str = (o, s) => [...s].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
   str(0, "RIFF"); v.setUint32(4, 36 + total * 2, true); str(8, "WAVE"); str(12, "fmt ");
@@ -346,12 +351,18 @@ function makeChimeUrl() {
   return URL.createObjectURL(new Blob([buf], { type: "audio/wav" }));
 }
 
+// ONE audio element for the whole page. iPhones only let a page play sound on an element
+// that the user started with a tap, so the first tap plays a short SILENT clip on it
+// (unmuted: a muted play does not count), then the chime is loaded into the same element.
 function chimeElement() {
   if (!st.chime) {
     try {
-      st.chime = new Audio(makeChimeUrl());
+      st.chimeUrl = makeChimeUrl();
+      st.silenceUrl = wavUrl(new Float32Array(4410), 22050);       // 0.2 s of silence
+      st.chime = new Audio();
       st.chime.preload = "auto";
       st.chime.setAttribute("playsinline", "");
+      st.chime.src = st.chimeUrl;
     } catch { st.chime = null; }
   }
   return st.chime;
@@ -361,24 +372,39 @@ function chimeElement() {
 function unlockAudio() {
   try { if (navigator.audioSession) navigator.audioSession.type = "playback"; } catch { /* older browsers */ }
   const el = chimeElement();
-  if (el && !st.audioReady) {
-    el.muted = true;
-    const p = el.play();
-    const done = () => { el.pause(); el.currentTime = 0; el.muted = false; };
-    if (p && p.then) {
-      p.then(() => { done(); st.audioReady = true; renderAlertBtn(); }).catch(() => { el.muted = false; });
-    } else { done(); st.audioReady = true; }
+  if (el && !st.audioReady && !st.unlocking && !st.alarmTimer) {
+    st.unlocking = true;
+    el.muted = false;
+    el.src = st.silenceUrl;
+    let p;
+    try { p = el.play(); } catch (e) { p = Promise.reject(e); }
+    st.unlockPromise = Promise.resolve(p)
+      .then(() => { st.audioReady = true; st.audioError = null; })
+      .catch((e) => { st.audioError = (e && e.name) || "blocked"; })
+      .finally(() => {
+        st.unlocking = false;
+        el.pause();
+        el.src = st.chimeUrl;
+        el.load();
+        renderAlertBtn();
+      });
   }
-  try {                                         // Web Audio as a second way to make sound
+  try {                                         // Web Audio as a second way: play one silent sample
     const AC = window.AudioContext || window.webkitAudioContext;
     if (AC) {
       st.audio = st.audio || new AC();
       if (st.audio.state !== "running") st.audio.resume();
+      const src = st.audio.createBufferSource();
+      src.buffer = st.audio.createBuffer(1, 1, 22050);
+      src.connect(st.audio.destination);
+      src.start(0);
     }
   } catch { /* no Web Audio */ }
 }
-// any tap on the page counts (e.g. after reopening a tracking link)
-document.addEventListener("pointerdown", unlockAudio, { capture: true, passive: true });
+// Any tap on the page counts (e.g. after reopening a tracking link). These are the events a
+// browser accepts as "the user did something": touchend / click / keydown, NOT touchstart.
+["touchend", "click", "keydown"].forEach((ev) =>
+  document.addEventListener(ev, unlockAudio, { capture: true, passive: true }));
 
 function beepWebAudio() {
   const ctx = st.audio;
@@ -401,11 +427,14 @@ function beepWebAudio() {
 function playChime() {
   const el = chimeElement();
   if (!el) return Promise.resolve(beepWebAudio());
+  if (st.unlocking && st.unlockPromise) return st.unlockPromise.then(playChime);   // let the unlock finish first
   el.muted = false;
-  el.currentTime = 0;
-  const p = el.play();
-  if (!p || !p.then) return Promise.resolve(true);
-  return p.then(() => true).catch(() => beepWebAudio());
+  if (el.src !== st.chimeUrl) el.src = st.chimeUrl;
+  try { el.currentTime = 0; } catch { /* not loaded yet */ }
+  let p;
+  try { p = el.play(); } catch (e) { p = Promise.reject(e); }
+  return Promise.resolve(p).then(() => { st.audioError = null; return true; })
+    .catch((e) => { st.audioError = (e && e.name) || "blocked"; return beepWebAudio(); });
 }
 
 function buzz() {
@@ -425,7 +454,12 @@ function stopAlarm() {
 function alarmRound() {
   st.alarmRounds = (st.alarmRounds || 0) + 1;
   if (st.alarmRounds > ALARM_MAX_ROUNDS) { stopAlarm(); return; }
-  playChime().then((ok) => { st.lastAlert.sound = st.lastAlert.sound || ok; });
+  playChime().then((ok) => {
+    st.lastAlert.sound = st.lastAlert.sound || ok;
+    const line = $("#alarmSound");
+    line.textContent = ok ? t("soundOk") : t("soundBlocked", { why: st.audioError || "?" });
+    line.classList.toggle("bad", !ok);
+  });
   st.lastAlert.buzz = buzz() || st.lastAlert.buzz;
   const card = $("#statusCard");
   card.classList.remove("flash"); void card.offsetWidth; card.classList.add("flash");

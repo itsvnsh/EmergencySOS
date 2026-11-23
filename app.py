@@ -114,7 +114,8 @@ def _secret_key():
 app = Flask(__name__)
 app.json = JSONProvider(app)
 app.secret_key = _secret_key()
-app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax",
+app.config.update(SEND_FILE_MAX_AGE_DEFAULT=0,      # browsers re-check static files (no stale JS on phones)
+                  SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax",
                   PERMANENT_SESSION_LIFETIME=dt.timedelta(hours=12))
 
 STAFF = ("DISPATCHER", "HOSPITAL_ADMIN")
@@ -131,7 +132,17 @@ def csrf_guard():
 
 @app.context_processor
 def inject_csrf():
-    return {"csrf_token": security.csrf_token}
+    return {"csrf_token": security.csrf_token, "asset": asset_url}
+
+
+def asset_url(filename):
+    """Static file URL with ?v=<last change>, so a phone never runs an old cached script."""
+    path = os.path.join(app.static_folder, filename)
+    try:
+        v = int(os.path.getmtime(path))
+    except OSError:
+        v = 0
+    return url_for("static", filename=filename, v=v)
 
 
 class ApiError(Exception):

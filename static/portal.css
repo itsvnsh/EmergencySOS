@@ -168,3 +168,5 @@ html[lang="hi"] body { font-family: "Nirmala UI", "Noto Sans Devanagari", "Manga
 @media (prefers-reduced-motion: reduce) { .alarm { animation: none; } }
 .alert-toggle.needtap { border-color: var(--red); color: var(--red-dark); background: var(--red-soft); animation: needtap 1.5s ease-in-out infinite; }
 @keyframes needtap { 50% { box-shadow: 0 0 0 4px rgba(220, 38, 38, .2); } }
+.alarm-box .alarm-sound { color: var(--green); font-weight: 600; }
+.alarm-box .alarm-sound.bad { color: var(--red-dark); }

@@ -1743,6 +1743,17 @@ class PatientPhoneTests(unittest.TestCase):
 
 
 class PortalAlarmTests(unittest.TestCase):
+    def test_scripts_are_never_stale_on_phones(self):
+        if not DB_OK:
+            self.skipTest("MySQL not reachable")
+        from app import app
+        c = app.test_client()
+        html = c.get("/sos").get_data(as_text=True)
+        self.assertRegex(html, r"portal\.js\?v=\d+")
+        r = c.get("/static/portal.js")
+        self.assertIn("max-age=0", r.headers.get("Cache-Control", ""))
+        r.close()
+
     def setUp(self):
         with open(os.path.join(HERE, "static", "portal.js"), encoding="utf-8") as f:
             self.js = f.read()
@@ -1753,7 +1764,13 @@ class PortalAlarmTests(unittest.TestCase):
         self.assertIn('new Blob([buf], { type: "audio/wav" })', self.js)     # plays on iPhones in silent mode
         self.assertIn("setInterval(alarmRound, ALARM_REPEAT_MS)", self.js)   # repeats until OK
         self.assertIn("st.pendingAlarm", self.js)                            # replays after the screen was off
-        self.assertIn('document.addEventListener("pointerdown", unlockAudio', self.js)
+        # unlock on events that count as a user tap on phones (touchend/click), not touchstart/pointerdown
+        self.assertIn('["touchend", "click", "keydown"].forEach', self.js)
+        self.assertNotIn('addEventListener("pointerdown", unlockAudio', self.js)
+        # iPhone: the unlock must be a real (unmuted) play of a silent clip on the SAME element
+        self.assertIn("el.src = st.silenceUrl;", self.js)
+        self.assertNotIn("el.muted = true;", self.js)
+        self.assertIn('id="alarmSound"', self.html)
         for el in ('id="alarm"', 'id="alarmStop"', 'id="alarmNoVibrate"'):
             self.assertIn(el, self.html)
 
