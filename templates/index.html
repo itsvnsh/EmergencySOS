@@ -48,7 +48,7 @@
         <h2>New SOS request</h2>
         <form id="sosForm" autocomplete="off">
           <label>Patient name <input name="patient_name" required maxlength="80" placeholder="e.g. Rahul Sharma"></label>
-          <label>Phone <input name="phone" maxlength="20" placeholder="optional"></label>
+          <label>Phone <input name="phone" type="tel" inputmode="numeric" maxlength="10" pattern="[0-9]{0,10}" title="Up to 10 digits" placeholder="optional, up to 10 digits"></label>
           <div class="row">
             <label>Emergency type <select name="emergency_type" id="typeSelect"></select></label>
             <label>Severity <span class="hint" id="sevLabel">3 &middot; moderate</span>
@@ -183,7 +183,7 @@
             </select></label>
             <label>Hospital (admins) <select name="hospital_id" id="userHospital"></select></label>
           </div>
-          <label>Phone <input name="phone" maxlength="20"></label>
+          <label>Phone <input name="phone" type="tel" inputmode="numeric" maxlength="10" pattern="[0-9]{0,10}" title="Up to 10 digits" placeholder="optional, up to 10 digits"></label>
           <button type="submit" class="primary">Create account</button>
         </form>
       </div>

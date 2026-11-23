@@ -47,7 +47,7 @@
       <fieldset>
         <legend data-i18n="step4">4. Patient</legend>
         <label><span data-i18n="name">Patient name</span> <input name="patient_name" id="pname" maxlength="80" autocomplete="name" required></label>
-        <label><span data-i18n="phone">Phone to call back</span> <input name="phone" id="pphone" type="tel" maxlength="20" autocomplete="tel"></label>
+        <label><span data-i18n="phone">Phone to call back</span> <input name="phone" id="pphone" type="tel" inputmode="numeric" maxlength="10" pattern="[0-9]{0,10}" title="Up to 10 digits" autocomplete="tel"></label>
         <label><span data-i18n="desc">What happened? (optional)</span> <input name="description" maxlength="255"></label>
       </fieldset>
 
@@ -74,6 +74,15 @@
   </section>
 </main>
 
+<div class="alarm hidden" id="alarm" role="alertdialog" aria-live="assertive" aria-labelledby="alarmTitle">
+  <div class="alarm-box">
+    <div class="alarm-icon" aria-hidden="true">&#127973;</div>
+    <b id="alarmTitle"></b>
+    <span id="alarmText"></span>
+    <small id="alarmNoVibrate" class="hidden" data-i18n="noVibrate"></small>
+    <button type="button" id="alarmStop" data-i18n="alarmStop">OK</button>
+  </div>
+</div>
 <div id="toast" class="toast" role="status"></div>
 <script src="{{ url_for('static', filename='vendor/leaflet/leaflet.js') }}"></script>
 <script src="{{ url_for('static', filename='offline_map.js') }}"></script>

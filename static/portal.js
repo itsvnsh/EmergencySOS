@@ -8,7 +8,8 @@ const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "
 const nice = (s) => esc(String(s ?? "").replace(/_/g, " ").toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase()));
 
 const st = { meta: null, user: null, type: null, sev: 3, map: null, pin: null, track: null, trackMap: null, es: null, poll: null,
-  lang: "en", last: null, lastStatus: null, alerts: true, audio: null, locLabel: null };
+  lang: "en", last: null, lastStatus: null, alerts: true, audio: null, locLabel: null,
+  chime: null, audioReady: false, alarmTimer: null, alarmRounds: 0, pendingAlarm: false, lastAlert: null };
 
 // localStorage can be missing or blocked (private mode, some embeds): never let it break the page
 const store = {
@@ -74,7 +75,7 @@ async function init() {
   applyLang();
   if (st.user?.role === "PATIENT") {
     $("#pname").value = st.user.full_name;
-    $("#pphone").value = st.user.phone || "";
+    $("#pphone").value = String(st.user.phone || "").replace(/[^0-9]/g, "").slice(-10);
     loadMine();
   }
   setupMap();
@@ -107,6 +108,13 @@ function renderWho() {
   $("#who").innerHTML = `${esc(u.full_name)}${link} <button id="logout">${esc(t("logout"))}</button>`;
   $("#logout").onclick = async () => { await api("/api/logout", { method: "POST" }); location.reload(); };
 }
+
+// phone: keep digits only, at most 10 (also when pasting "+91 98765-43210" style numbers)
+$("#pphone").addEventListener("input", (e) => {
+  const digits = e.target.value.replace(/[^0-9]/g, "");
+  const v = digits.length > 10 && digits.startsWith("91") ? digits.slice(2) : digits;   // drop the +91 country code
+  if (v.slice(0, 10) !== e.target.value) e.target.value = v.slice(0, 10);
+});
 
 $("#types").addEventListener("click", (e) => {
   const b = e.target.closest(".type"); if (!b) return;
@@ -171,6 +179,7 @@ $("#sosForm").addEventListener("submit", async (e) => {
   err.textContent = "";
   if (!st.type) { err.textContent = t("errType"); $("#types").scrollIntoView({ behavior: "smooth", block: "center" }); return; }
   if (!$("#pname").value.trim()) { err.textContent = t("errName"); $("#pname").focus(); return; }
+  if (!/^[0-9]{0,10}$/.test($("#pphone").value)) { err.textContent = t("errPhone"); $("#pphone").focus(); return; }
   unlockAudio();                  // browsers only allow sound after a tap: this tap counts
   const btn = $("#sendBtn");
   btn.disabled = true; btn.textContent = t("sending");
@@ -305,77 +314,193 @@ $("#myList").addEventListener("click", (e) => {
 });
 
 // ---------------- alert when a hospital is assigned ----------------
-// Sound is made with the Web Audio API (no sound file to download). Browsers only allow
-// sound after the user tapped something, so the SEND tap (or the alert button) unlocks it.
-function unlockAudio() {
-  try {
-    const AC = window.AudioContext || window.webkitAudioContext;
-    if (!AC) return;
-    st.audio = st.audio || new AC();
-    if (st.audio.state === "suspended") st.audio.resume();
-  } catch { /* no sound on this device */ }
+// Phones are strict about sound, so the alert is built to get through:
+//  - the chime is a real audio clip (a WAV made here in JavaScript, nothing to download)
+//    played by an <audio> element. iPhones play that even with the ring/silent switch
+//    on silent, while Web Audio tones are muted by it.
+//  - browsers allow sound only after the user tapped the page. The SEND tap (or any
+//    tap, or the alert button) "unlocks" the audio element by playing it once silently.
+//  - the alert REPEATS (sound + vibration every few seconds) until the patient taps OK,
+//    and if the page was in the background it plays again when it comes back.
+//  - vibration: Android browsers support it; iPhone browsers have no vibration at all,
+//    so on an iPhone the page says so and relies on sound + the flashing screen.
+const ALARM_REPEAT_MS = 4000, ALARM_MAX_ROUNDS = 8;
+const canVibrate = typeof navigator.vibrate === "function";
+
+function makeChimeUrl() {
+  const rate = 22050, total = Math.ceil(rate * 1.6), pcm = new Float32Array(total);
+  [0, 0.75].forEach((rep) => [880, 1175, 1568].forEach((f, i) => {       // three rising tones, twice
+    const s0 = Math.floor((rep + i * 0.18) * rate), n = Math.floor(0.38 * rate);
+    for (let k = 0; k < n && s0 + k < total; k++) {
+      const tt = k / rate, env = Math.min(1, tt / 0.015) * Math.exp(-tt * 8);
+      pcm[s0 + k] += Math.sin(2 * Math.PI * f * tt) * env * 0.5;
+    }
+  }));
+  const buf = new ArrayBuffer(44 + total * 2), v = new DataView(buf);
+  const str = (o, s) => [...s].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
+  str(0, "RIFF"); v.setUint32(4, 36 + total * 2, true); str(8, "WAVE"); str(12, "fmt ");
+  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);          // PCM, mono
+  v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  str(36, "data"); v.setUint32(40, total * 2, true);
+  for (let k = 0; k < total; k++) v.setInt16(44 + k * 2, Math.max(-1, Math.min(1, pcm[k])) * 32767, true);
+  return URL.createObjectURL(new Blob([buf], { type: "audio/wav" }));
 }
 
-function playChime() {
+function chimeElement() {
+  if (!st.chime) {
+    try {
+      st.chime = new Audio(makeChimeUrl());
+      st.chime.preload = "auto";
+      st.chime.setAttribute("playsinline", "");
+    } catch { st.chime = null; }
+  }
+  return st.chime;
+}
+
+// Call from a tap: lets this page play sound later (when the hospital is assigned).
+function unlockAudio() {
+  try { if (navigator.audioSession) navigator.audioSession.type = "playback"; } catch { /* older browsers */ }
+  const el = chimeElement();
+  if (el && !st.audioReady) {
+    el.muted = true;
+    const p = el.play();
+    const done = () => { el.pause(); el.currentTime = 0; el.muted = false; };
+    if (p && p.then) {
+      p.then(() => { done(); st.audioReady = true; renderAlertBtn(); }).catch(() => { el.muted = false; });
+    } else { done(); st.audioReady = true; }
+  }
+  try {                                         // Web Audio as a second way to make sound
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (AC) {
+      st.audio = st.audio || new AC();
+      if (st.audio.state !== "running") st.audio.resume();
+    }
+  } catch { /* no Web Audio */ }
+}
+// any tap on the page counts (e.g. after reopening a tracking link)
+document.addEventListener("pointerdown", unlockAudio, { capture: true, passive: true });
+
+function beepWebAudio() {
   const ctx = st.audio;
-  if (!ctx || ctx.state !== "running") return false;
+  if (!ctx) return false;
+  if (ctx.state !== "running") { try { ctx.resume(); } catch { /* ignore */ } }
   const now = ctx.currentTime;
-  // three rising tones, played twice: easy to hear, not a siren
   [0, 0.75].forEach((rep) => [880, 1175, 1568].forEach((f, i) => {
-    const o = ctx.createOscillator(), g = ctx.createGain();
-    const t0 = now + rep + i * 0.18;
+    const o = ctx.createOscillator(), g = ctx.createGain(), t0 = now + rep + i * 0.18;
     o.type = "sine"; o.frequency.value = f;
     g.gain.setValueAtTime(0.0001, t0);
-    g.gain.exponentialRampToValueAtTime(0.35, t0 + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.4, t0 + 0.02);
     g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.35);
     o.connect(g).connect(ctx.destination);
     o.start(t0); o.stop(t0 + 0.4);
   }));
-  return true;
+  return ctx.state === "running";
+}
+
+// Plays the chime; resolves to true if the phone accepted it.
+function playChime() {
+  const el = chimeElement();
+  if (!el) return Promise.resolve(beepWebAudio());
+  el.muted = false;
+  el.currentTime = 0;
+  const p = el.play();
+  if (!p || !p.then) return Promise.resolve(true);
+  return p.then(() => true).catch(() => beepWebAudio());
+}
+
+function buzz() {
+  if (!canVibrate) return false;
+  try { return navigator.vibrate([500, 200, 500, 200, 900]); } catch { return false; }
+}
+
+function stopAlarm() {
+  clearInterval(st.alarmTimer);
+  st.alarmTimer = null;
+  st.pendingAlarm = false;
+  if (st.chime) { st.chime.pause(); st.chime.currentTime = 0; }
+  if (canVibrate) { try { navigator.vibrate(0); } catch { /* ignore */ } }
+  $("#alarm").classList.add("hidden");
+}
+
+function alarmRound() {
+  st.alarmRounds = (st.alarmRounds || 0) + 1;
+  if (st.alarmRounds > ALARM_MAX_ROUNDS) { stopAlarm(); return; }
+  playChime().then((ok) => { st.lastAlert.sound = st.lastAlert.sound || ok; });
+  st.lastAlert.buzz = buzz() || st.lastAlert.buzz;
+  const card = $("#statusCard");
+  card.classList.remove("flash"); void card.offsetWidth; card.classList.add("flash");
 }
 
 function hospitalAssignedAlert(s, test = false) {
   if (!st.alerts && !test) return null;
-  const sound = playChime();
-  let buzz = false;
-  try { buzz = navigator.vibrate ? navigator.vibrate([400, 150, 400, 150, 800]) : false; } catch { /* not allowed */ }
-  const card = $("#statusCard");
-  card.classList.remove("flash"); void card.offsetWidth; card.classList.add("flash");
+  stopAlarm();
+  st.lastAlert = { sound: false, buzz: false, at: Date.now(), test };
+  const a = s?.allocation;
+  $("#alarmTitle").textContent = test ? t("testAlert") : t("assigned");
+  $("#alarmText").textContent = test
+    ? t(canVibrate ? "testHint" : "testHintNoVibrate")
+    : `${a?.hospital_name || ""}${s?.route ? " · " + t("aboutMin", { min: Math.round(s.route.minutes) }) : ""}`;
+  $("#alarmNoVibrate").classList.toggle("hidden", canVibrate);
+  $("#alarm").classList.remove("hidden");
+  st.alarmRounds = 0;
+  alarmRound();
   if (!test) {
+    st.alarmTimer = setInterval(alarmRound, ALARM_REPEAT_MS);
+    st.pendingAlarm = document.hidden;          // in the background: play again when the page is back
     document.title = "✅ " + t("alertTitle");
-    // a phone notification if the page is in the background and the user allowed it
     if (document.hidden && "Notification" in window && Notification.permission === "granted") {
       try {
         new Notification(t("alertTitle"), { tag: "sos-assigned", body: t("notifyBody", {
-          h: s?.allocation?.hospital_name || "", min: s?.route ? Math.round(s.route.minutes) : "?" }) });
+          h: a?.hospital_name || "", min: s?.route ? Math.round(s.route.minutes) : "?" }) });
       } catch { /* some phones only allow notifications from a service worker */ }
     }
   }
-  st.lastAlert = { sound, buzz, at: Date.now() };       // for the demo / tests
   return st.lastAlert;
 }
 
+$("#alarmStop").addEventListener("click", stopAlarm);
+
 function renderAlertBtn() {
   const b = $("#alertBtn");
-  b.textContent = (st.alerts ? "🔔 " : "🔕 ") + t(st.alerts ? "alertsOn" : "alertsOff");
+  const needTap = st.alerts && !st.audioReady;
+  b.textContent = !st.alerts ? "🔕 " + t("alertsOff") : needTap ? "🔔 " + t("tapToEnable") : "🔔 " + t("alertsOn");
   b.setAttribute("aria-pressed", String(st.alerts));
   b.classList.toggle("off", !st.alerts);
+  b.classList.toggle("needtap", needTap);
 }
 $("#alertBtn").addEventListener("click", () => {
+  if (st.alerts && !st.audioReady) {            // first tap only turns the sound on
+    unlockAudio();
+    renderAlertBtn();
+    return;
+  }
   st.alerts = !st.alerts;
   store.set("sos_alerts", st.alerts);
   if (st.alerts) {
     unlockAudio();
     if ("Notification" in window && Notification.permission === "default") {
-      try { Notification.requestPermission(); } catch { /* old browsers */ }
+      try { Notification.requestPermission(); } catch { /* old browsers or plain http */ }
     }
+  } else {
+    stopAlarm();
   }
   renderAlertBtn();
 });
-$("#testAlertBtn").addEventListener("click", () => { unlockAudio(); setTimeout(() => hospitalAssignedAlert(st.last, true), 60); });
-document.addEventListener("visibilitychange", () => { if (!document.hidden) document.title = "Send SOS · EmergencySOS"; });
+$("#testAlertBtn").addEventListener("click", () => {
+  unlockAudio();
+  setTimeout(() => hospitalAssignedAlert(st.last, true), 80);
+});
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) return;
+  document.title = "Send SOS · EmergencySOS";
+  if (st.pendingAlarm) {                        // the alert happened while the screen was off
+    st.pendingAlarm = false;
+    st.alarmRounds = 0;
+    alarmRound();
+    if (!st.alarmTimer) st.alarmTimer = setInterval(alarmRound, ALARM_REPEAT_MS);
+  }
+});
 
 st.lang = store.get("sos_lang") === "hi" ? "hi" : "en";
 st.alerts = store.get("sos_alerts") !== false;
 init().catch((e) => toast(e.message, true));
-

@@ -318,7 +318,7 @@ def _validate_sos(data):
         raise ApiError("Latitude and longitude must be numbers")
     if not (-90 <= lat <= 90 and -180 <= lon <= 180):
         raise ApiError("Latitude/longitude out of range")
-    phone = str(data.get("phone", "")).strip()[:20] or None
+    phone = admin_ops.patient_phone(data.get("phone"))        # digits only, at most 10
     description = str(data.get("description", "")).strip()[:255] or None
     return name, phone, lat, lon, description
 

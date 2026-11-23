@@ -11,6 +11,8 @@ transaction_manager._with_retry, exactly like reservations.
 
 Which user may call what is decided in app.py (auth.require_role / check_hospital_access).
 """
+import re
+
 import pymysql
 
 import auth
@@ -60,6 +62,21 @@ def _spec(value):
     v = str(value or "").upper()
     if v not in SPECIALIZATIONS:
         raise TxError(f"Specialization must be one of {', '.join(SPECIALIZATIONS)}")
+    return v
+
+
+PHONE_MAX_DIGITS = 10
+_PHONE_RE = re.compile(r"[0-9]{1,%d}" % PHONE_MAX_DIGITS)
+
+
+def patient_phone(value):
+    """A patient's phone number: optional, digits only, at most 10 (spaces and dashes are ignored).
+    Hospital phone numbers (landlines like 0135-2643421) keep their own, looser rule."""
+    v = re.sub(r"[\s-]", "", str(value or ""))
+    if not v:
+        return None
+    if not _PHONE_RE.fullmatch(v):
+        raise ValueError(f"Phone number must be digits only, at most {PHONE_MAX_DIGITS} digits")
     return v
 
 
@@ -277,7 +294,7 @@ def _try_update_request(conn, rid, f):
 
 def update_request(rid, d):
     f = {"patient_name": _text(d.get("patient_name"), "Patient name", 80),
-         "phone": _text(d.get("phone"), "Phone", 20, required=False),
+         "phone": patient_phone(d.get("phone")),
          "description": _text(d.get("description"), "Description", 255, required=False)}
     return _with_retry(_try_update_request, int(rid), f)
 
@@ -326,7 +343,7 @@ def create_user(d):
             try:
                 uid = auth.create_user(cur, d.get("username"), d.get("password"), d.get("full_name"),
                                        role, int(hid) if hid else None,
-                                       _text(d.get("phone"), "Phone", 20, required=False))
+                                       patient_phone(d.get("phone")))
             except ValueError as e:
                 raise TxError(str(e))
             except pymysql.err.IntegrityError as e:

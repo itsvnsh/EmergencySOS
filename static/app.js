@@ -70,6 +70,15 @@ function table(headers, rows, emptyText = "Nothing to show.") {
   return `<div class="table-wrap"><table><thead><tr>${th}</tr></thead><tbody>${rows.join("")}</tbody></table></div>`;
 }
 
+// patient phone fields: digits only, at most 10 (the server checks the same rule)
+document.addEventListener("input", (e) => {
+  const el = e.target;
+  if (el.matches?.('input[name="phone"][pattern="[0-9]{0,10}"]')) {
+    const v = el.value.replace(/[^0-9]/g, "").slice(0, 10);
+    if (v !== el.value) el.value = v;
+  }
+});
+
 // ---------- tabs ----------
 function showTab(name) {
   document.querySelectorAll(".tab").forEach((x) => x.classList.toggle("active", x.dataset.tab === name));
@@ -297,7 +306,8 @@ $("#recentTable").addEventListener("click", (e) => {
     const r = state.recent.find((x) => x.request_id === +t.dataset.editReq);
     openDialog(`Patient details · request #${r.request_id}`, [
       { name: "patient_name", label: "Patient name", value: r.patient_name, required: true, maxlength: 80 },
-      { name: "phone", label: "Phone", value: r.phone, maxlength: 20 },
+      { name: "phone", label: "Phone (up to 10 digits)", type: "tel", value: r.phone, maxlength: 10,
+        pattern: "[0-9]{0,10}", inputmode: "numeric" },
       { name: "description", label: "Description", value: r.description, maxlength: 255 },
     ], async (data) => {
       await api(`/api/requests/${r.request_id}`, { method: "PUT", body: data });
@@ -604,13 +614,13 @@ loadMe()
 
 
 // ---------- generic edit dialog ----------
-// fields: [{name, label, type, value, options, required, min, max, maxlength, step}]
+// fields: [{name, label, type, value, options, required, min, max, maxlength, step, pattern, inputmode}]
 function openDialog(title, fields, onSave) {
   const dlg = $("#editDialog");
   $("#editTitle").textContent = title;
   $("#editError").textContent = "";
   $("#editFields").innerHTML = fields.map((f) => {
-    const attrs = ["required", "min", "max", "maxlength", "step"].filter((a) => f[a] != null && f[a] !== false)
+    const attrs = ["required", "min", "max", "maxlength", "step", "pattern", "inputmode"].filter((a) => f[a] != null && f[a] !== false)
       .map((a) => (f[a] === true ? a : `${a}="${esc(f[a])}"`)).join(" ");
     if (f.type === "select")
       return `<label>${esc(f.label)}<select name="${f.name}">${f.options.map((o) =>

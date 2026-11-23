@@ -146,3 +146,25 @@ html[lang="hi"] body { font-family: "Nirmala UI", "Noto Sans Devanagari", "Manga
   margin-left: 4px; border: 1px solid #1565c0; background: #fff; color: #1565c0; border-radius: 6px;
   padding: 1px 8px; font: inherit; font-size: 12px; cursor: pointer;
 }
+
+/* hospital-assigned alarm: full screen until the patient taps OK */
+.alarm {
+  position: fixed; inset: 0; z-index: 3000; display: flex; align-items: center; justify-content: center;
+  background: rgba(22, 163, 74, .92); padding: 20px; animation: alarm-pulse 1.2s ease-in-out infinite;
+}
+.alarm-box {
+  background: #fff; border-radius: 16px; padding: 22px 20px; max-width: 380px; width: 100%;
+  display: flex; flex-direction: column; gap: 8px; text-align: center; box-shadow: 0 10px 40px rgba(0,0,0,.25);
+}
+.alarm-icon { font-size: 44px; line-height: 1; }
+.alarm-box b { font-size: 24px; color: var(--green); }
+.alarm-box span { font-size: 17px; font-weight: 600; }
+.alarm-box small { color: var(--muted); font-size: 13px; }
+.alarm-box button {
+  margin-top: 8px; min-height: 52px; border: 0; border-radius: 12px; background: var(--green); color: #fff;
+  font: inherit; font-size: 18px; font-weight: 700; cursor: pointer;
+}
+@keyframes alarm-pulse { 0%, 100% { background: rgba(22, 163, 74, .92); } 50% { background: rgba(21, 128, 61, .97); } }
+@media (prefers-reduced-motion: reduce) { .alarm { animation: none; } }
+.alert-toggle.needtap { border-color: var(--red); color: var(--red-dark); background: var(--red-soft); animation: needtap 1.5s ease-in-out infinite; }
+@keyframes needtap { 50% { box-shadow: 0 0 0 4px rgba(220, 38, 38, .2); } }

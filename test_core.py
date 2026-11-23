@@ -1699,5 +1699,64 @@ class DockerSetupTests(unittest.TestCase):
             self.assertFalse(ep.has_tables())
 
 
+# ---------------------------------------------------------------------------
+# Patient phone numbers: digits only, at most 10
+# ---------------------------------------------------------------------------
+class PatientPhoneTests(unittest.TestCase):
+    def test_rule(self):
+        from admin_ops import patient_phone
+        self.assertEqual(patient_phone("9876543210"), "9876543210")
+        self.assertEqual(patient_phone("98765 43210"), "9876543210")      # spaces and dashes ignored
+        self.assertEqual(patient_phone("98765-43210"), "9876543210")
+        self.assertEqual(patient_phone("112"), "112")
+        self.assertIsNone(patient_phone(""))
+        self.assertIsNone(patient_phone(None))
+        for bad in ("98765432101", "+919876543210", "98765abcde", "９８７"):
+            with self.assertRaises(ValueError, msg=bad):
+                patient_phone(bad)
+
+    def test_every_patient_phone_field_is_limited(self):
+        for page in ("sos.html", "index.html"):
+            with open(os.path.join(HERE, "templates", page), encoding="utf-8") as f:
+                html = f.read()
+            import re
+            for tag in re.findall(r'<input name="phone"[^>]*>', html):
+                self.assertIn('maxlength="10"', tag, page)
+                self.assertIn('pattern="[0-9]{0,10}"', tag, page)
+
+    @unittest.skipUnless(DB_OK, "MySQL not reachable")
+    def test_api_refuses_long_numbers(self):
+        from app import app
+        c = app.test_client()
+        sos = {"patient_name": "Phone", "emergency_type": "GENERAL", "severity": 1, "latitude": 30.27, "longitude": 77.99}
+        r = c.post("/api/sos", json={**sos, "phone": "98765432101"})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("10", r.get_json()["error"])
+        r = c.post("/api/sos", json={**sos, "phone": "98765-43210"})
+        self.assertEqual(r.status_code, 201)
+        self.assertEqual(r.get_json()["request"]["phone"], "9876543210")
+        rid = r.get_json()["request"]["request_id"]
+        d = app.test_client()
+        login(d, "dispatcher", "dispatch123")
+        self.assertEqual(d.put(f"/api/requests/{rid}", json={"patient_name": "Phone", "phone": "123456789012"}).status_code, 400)
+        self.assertEqual(d.put(f"/api/requests/{rid}", json={"patient_name": "Phone", "phone": "0123456789"}).status_code, 200)
+
+
+class PortalAlarmTests(unittest.TestCase):
+    def setUp(self):
+        with open(os.path.join(HERE, "static", "portal.js"), encoding="utf-8") as f:
+            self.js = f.read()
+        with open(os.path.join(HERE, "templates", "sos.html"), encoding="utf-8") as f:
+            self.html = f.read()
+
+    def test_alarm_uses_an_audio_clip_and_repeats(self):
+        self.assertIn('new Blob([buf], { type: "audio/wav" })', self.js)     # plays on iPhones in silent mode
+        self.assertIn("setInterval(alarmRound, ALARM_REPEAT_MS)", self.js)   # repeats until OK
+        self.assertIn("st.pendingAlarm", self.js)                            # replays after the screen was off
+        self.assertIn('document.addEventListener("pointerdown", unlockAudio', self.js)
+        for el in ('id="alarm"', 'id="alarmStop"', 'id="alarmNoVibrate"'):
+            self.assertIn(el, self.html)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
