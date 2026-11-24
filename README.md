@@ -11,7 +11,7 @@ EmergencySOS routes an emergency (SOS) request to the most suitable hospital bas
 
 Hospital names are real Dehradun-region hospitals with approximate locations. **All bed, equipment and doctor data is simulated.**
 
-**Status: Phase III, 100% complete, plus the Tier 1, 2 and 3 additions.** Login with roles, a hospital admin panel, road-distance routing with a live map, automatic case completion with live push updates, a mobile SOS portal, load testing and an ER diagram (Phase III); **ambulances as a second locked resource, Banker's algorithm on every admission, a live deadlock-detection lab, and database views, triggers and stored procedures** (Tier 1); **a Dashboard tab with charts, a database connection pool (51x the load-test throughput) and a Hindi + alerting SOS portal** (Tier 2); **an offline map fallback, login rate limiting, CSRF protection and a one-command Docker Compose setup** (Tier 3). 133 automated tests (see section 7).
+**Status: Phase III, 100% complete, plus the Tier 1, 2 and 3 additions.** Login with roles, a hospital admin panel, road-distance routing with a live map, automatic case completion with live push updates, a mobile SOS portal, load testing and an ER diagram (Phase III); **ambulances as a second locked resource, Banker's algorithm on every admission, a live deadlock-detection lab, and database views, triggers and stored procedures** (Tier 1); **a Dashboard tab with charts, a database connection pool (42x the load-test throughput) and a Hindi + alerting SOS portal** (Tier 2); **an offline map fallback, login rate limiting, CSRF protection and a one-command Docker Compose setup** (Tier 3). 133 automated tests (see section 7).
 
 ---
 
@@ -333,11 +333,11 @@ Start with `CASE_TIME_SCALE=0.1` so automatic completion is visible within a min
 
 | Isolation | ops/s | avg ms | p95 ms | consistent |
 |---|---|---|---|---|
-| READ COMMITTED | 26.7 | 690 | 1172 | YES |
-| REPEATABLE READ | 25.6 | 728 | 1271 | YES |
-| SERIALIZABLE | 24.6 | 780 | 1364 | YES |
+| READ COMMITTED | 126.3 | 111 | 317 | YES |
+| REPEATABLE READ | 149.8 | 99 | 153 | YES |
+| SERIALIZABLE | 184.7 | 84 | 176 | YES |
 
-All levels stay consistent because the safety comes from `SELECT ... FOR UPDATE` plus the locked re-check, not from the isolation level. REPEATABLE READ (InnoDB default) is kept. With 40 clients about 1 in 6 bookings hit a **stale ranking** (the hospital filled up between ranking and commit) and were correctly booked at the next hospital. Numbers depend on the machine, so re-run on yours for the report.
+All levels stay consistent because the safety comes from `SELECT ... FOR UPDATE` plus the locked re-check, not from the isolation level. REPEATABLE READ (InnoDB default) is kept. With 40 clients about 1 in 6 bookings hit a **stale ranking** (the hospital filled up between ranking and commit) and were correctly booked at the next hospital. Measured on the team laptop on 24 Nov 2026 with the connection pool on (so much faster than the Phase III run without it); numbers depend on the machine.
 
 **Connection pool** (`db.py`, Tier 2)
 - Opening a MySQL connection costs a TCP handshake and a login (about 30 ms here, much more when 20 clients connect at once). The pool keeps up to `DB_POOL_SIZE` (10) open connections and lends them out: `db.pooled()` borrows one, `close()` gives it back.
@@ -350,10 +350,10 @@ Before/after, 20 clients × 15 SOS, REPEATABLE READ, on the development laptop (
 
 | Pool | ops/s | avg ms | p95 ms | MySQL connections | consistent |
 |---|---|---|---|---|---|
-| off (connect per query) | 2.5 | 7531 | 12862 | one per query | YES |
-| on (size 10) | 127.6 | 110 | 479 | 10 | YES |
+| off (connect per query) | 4.1 | 4338 | 8516 | one per query | YES |
+| on (size 10) | 173.4 | 83 | 247 | 10 | YES |
 
-About 51x the throughput: 2357 borrows were served by 10 connections (99.6% reused). Re-run on your machine for the report.
+About 42x the throughput: 2449 borrows were served by 10 connections (99.6% reused). Measured on the team laptop on 24 Nov 2026; numbers depend on the machine.
 
 **Dashboard** (`dashboard.py`, `static/dashboard.js`, Tier 2)
 - A handful of aggregate SQL queries (`COUNT`, `AVG(TIMESTAMPDIFF(...))`, `GROUP BY` hour); lab rows never counted. The scheduling chart reuses the Scheduler Lab simulation on the patients in the system, or the sample workload when there are fewer than 5.
