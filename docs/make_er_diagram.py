@@ -39,8 +39,12 @@ def short_type(t):
 def main():
     cols = db.query_all(
         "SELECT table_name AS t, column_name AS c, column_type AS ty, column_key AS k, is_nullable AS n "
-        "FROM information_schema.columns WHERE table_schema = %s ORDER BY table_name, ordinal_position",
-        (config.DB_NAME,))
+        "FROM information_schema.columns WHERE table_schema = %s "
+        # base tables only: the views (schema_objects.sql) are not entities
+        "AND table_name IN (SELECT table_name FROM information_schema.tables "
+        "                   WHERE table_schema = %s AND table_type = 'BASE TABLE') "
+        "ORDER BY table_name, ordinal_position",
+        (config.DB_NAME, config.DB_NAME))
     fks = db.query_all(
         "SELECT k.table_name AS t, k.column_name AS c, k.referenced_table_name AS rt, "
         "k.referenced_column_name AS rc, r.delete_rule AS rule "
