@@ -1674,6 +1674,8 @@ class DockerSetupTests(unittest.TestCase):
         for secret in ("db_login.json", ".secret_key", ".env", "venv/"):
             self.assertIn(secret, ignored)
 
+    @unittest.skipUnless(os.path.exists(os.path.join(HERE, "docker-compose.yml")),
+                         "docker-compose.yml is not copied into the image (.dockerignore)")
     def test_compose_wires_app_to_mysql(self):
         y = self.read("docker-compose.yml")
         self.assertIn("image: mysql:8.0", y)

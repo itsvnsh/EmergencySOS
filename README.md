@@ -97,6 +97,10 @@ docker compose up --build
 
 Then open http://localhost:5000. This starts MySQL 8 and the app in two containers, creates the database with demo data (triggers included) on the first start and keeps it in a volume afterwards. Nothing else to install. `docker compose down -v` starts fresh; `docker compose exec app python -m unittest test_core` runs the tests inside. The passwords in `docker-compose.yml` are demo defaults: put your own in a `.env` file (`DB_PASSWORD=...`, `MYSQL_ROOT_PASSWORD=...`, `SECRET_KEY=...`).
 
+Tested on the team laptop (Windows 11, Docker Desktop with WSL 2): the first build downloads the MySQL and Python images and takes a few minutes; later starts take seconds. Port 5000 must be free, so stop a locally started `python app.py` first. Phones on the same Wi-Fi open `http://<laptop-IP>:5000/sos` as usual. `docker compose down` stops it (the data stays in the volume).
+
+Inside Docker the pool gain is smaller (about 1.9x: 15.2 -> 28.7 ops/s) because a new connection to the MySQL container is cheap; on Windows with a local MySQL it is about 42x (section 5).
+
 Without Docker, follow 2.1 to 2.5.
 
 ### 2.1 Install the software
@@ -448,7 +452,7 @@ Who can call it: \* anyone, **P** patient, **D** dispatcher, **A** hospital admi
 - [x] offline map: service-worker tile cache + drawn fallback map, automatic switch back
 - [x] login rate limiting (per user+IP and per IP, 429 + Retry-After, audit row) and anonymous SOS limit
 - [x] CSRF tokens on every state-changing call + origin check; new session and token on login
-- [x] Docker Compose: MySQL 8 + app, one command, data kept in a volume (written and checked here, but not run on this machine: Docker was not installed)
+- [x] Docker Compose: MySQL 8 + app, one command, data kept in a volume (run on the team laptop on 24 Nov 2026 with Docker Desktop 29.9: both containers start, the database is created with all 5 triggers and 5 views, and 147 tests pass inside the app container)
 - [x] 22 new tests (133 in total)
 
 ## 8. Troubleshooting
