@@ -23,6 +23,8 @@ The pool is a classic OS resource pool:
     fresh one instead of waiting: holding one connection while waiting for a second
     is hold-and-wait, and with every connection out that would deadlock the pool
 """
+import os
+import tempfile
 import threading
 import time
 
@@ -39,6 +41,26 @@ SERVER_STATUS_IN_TRANS = 1        # bit in the server status: a transaction is o
 PING_IF_IDLE_SEC = 30             # check a connection is still alive if it sat idle this long
 
 
+_ssl_ca_file = None
+
+
+def _ssl_options():
+    """ssl= argument for PyMySQL (None = plain connection, as on a local MySQL)."""
+    global _ssl_ca_file
+    if not config.DB_SSL:
+        return None
+    ca = config.DB_SSL_CA.strip()
+    if not ca:
+        return {"verify_mode": False}          # encrypted, server certificate not checked
+    if "BEGIN CERTIFICATE" in ca:              # PEM pasted into an environment variable
+        if _ssl_ca_file is None:
+            with tempfile.NamedTemporaryFile("w", suffix=".pem", delete=False) as f:
+                f.write(ca + "\n")
+            _ssl_ca_file = f.name
+        ca = _ssl_ca_file
+    return {"ca": ca, "verify_mode": True}
+
+
 def get_connection(database=True, autocommit=False):
     """Open a new connection. Rows come back as dictionaries."""
     conn = pymysql.connect(
@@ -50,6 +72,7 @@ def get_connection(database=True, autocommit=False):
         charset="utf8mb4",
         cursorclass=pymysql.cursors.DictCursor,
         autocommit=autocommit,
+        ssl=_ssl_options(),
     )
     with conn.cursor() as cur:
         cur.execute("SET SESSION innodb_lock_wait_timeout = %s",

@@ -1,0 +1,28 @@
+# Render blueprint: deploys the web app from the Dockerfile on Render's free plan.
+# The MySQL database is hosted separately (e.g. Aiven free MySQL); Render asks for
+# its connection details (the sync: false values) when the blueprint is created.
+services:
+  - type: web
+    name: emergencysos
+    runtime: docker
+    plan: free
+    healthCheckPath: /sos
+    envVars:
+      - key: DB_HOST
+        sync: false
+      - key: DB_PORT
+        sync: false
+      - key: DB_USER
+        sync: false
+      - key: DB_PASSWORD
+        sync: false
+      - key: DB_NAME
+        value: emergencysos
+      - key: DB_SSL
+        value: "1"
+      - key: DB_POOL_SIZE
+        value: "5"
+      - key: SECRET_KEY
+        generateValue: true
+      - key: ROUTING_MODE
+        value: osrm

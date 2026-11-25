@@ -27,6 +27,11 @@ DB_PORT = int(_setting("DB_PORT", "3306"))
 DB_USER = _setting("DB_USER", "root")
 DB_PASSWORD = os.environ.get("DB_PASSWORD", str(_saved.get("DB_PASSWORD", "")))
 DB_NAME = os.environ.get("DB_NAME", "emergencysos")
+# TLS to MySQL, needed by hosted databases such as Aiven (cloud deploy).
+#   DB_SSL=1     encrypt the connection
+#   DB_SSL_CA    the server's CA certificate (PEM text or a file path) to also verify it
+DB_SSL_CA = os.environ.get("DB_SSL_CA", "")
+DB_SSL = os.environ.get("DB_SSL", "0") == "1" or bool(DB_SSL_CA)
 
 # Transaction settings (DBMS)
 ISOLATION_LEVEL = "REPEATABLE READ"   # InnoDB default, stated explicitly
@@ -73,6 +78,7 @@ AUTO_COMPLETE_EVERY_SEC = 10          # how often the worker checks
 
 # Flask
 FLASK_HOST = os.environ.get("FLASK_HOST", "127.0.0.1")
-FLASK_PORT = int(os.environ.get("FLASK_PORT", "5000"))
+# PORT is what cloud hosts (Render, Railway, ...) set for the web server
+FLASK_PORT = int(os.environ.get("FLASK_PORT") or os.environ.get("PORT") or "5000")
 # Signs the login cookie. Set your own in production; a random one is saved on first run.
 SECRET_KEY = os.environ.get("SECRET_KEY") or str(_saved.get("SECRET_KEY", ""))
