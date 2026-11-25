@@ -47,6 +47,41 @@ def has_tables():
         conn.close()
 
 
+# Earlier demo data placed the hospitals at approximate points (Graphic Era Hospital
+# ~14 km off). Move a hospital to its OpenStreetMap location only while it still has
+# the old approximate point, so changes made in the admin console are kept.
+OLD_LOCATIONS = {
+    "Max Super Speciality Hospital": (30.3735, 78.0758),
+    "Shri Mahant Indiresh Hospital": (30.3005, 78.0135),
+    "Government Doon Medical College Hospital": (30.3244, 78.0437),
+    "Synergy Institute of Medical Sciences": (30.3345, 78.0095),
+    "Coronation District Hospital": (30.3290, 78.0565),
+    "Graphic Era Hospital": (30.2690, 78.0090),
+    "Himalayan Hospital": (30.1905, 78.1700),
+    "AIIMS Rishikesh": (30.0869, 78.2676),
+}
+
+
+def fix_hospital_locations():
+    import init_db
+    moved = 0
+    conn = db.get_connection(autocommit=True)
+    try:
+        with conn.cursor() as cur:
+            for name, area, lat, lon, *_ in init_db.HOSPITALS:
+                old = OLD_LOCATIONS.get(name)
+                if not old:
+                    continue
+                moved += cur.execute(
+                    "UPDATE hospitals SET area = %s, latitude = %s, longitude = %s "
+                    "WHERE name = %s AND ABS(latitude - %s) < 0.00005 AND ABS(longitude - %s) < 0.00005",
+                    (area, lat, lon, name, old[0], old[1]))
+    finally:
+        conn.close()
+    if moved:
+        print(f"moved {moved} hospitals to their OpenStreetMap locations")
+
+
 if __name__ == "__main__":
     wait_for_mysql()
     if os.environ.get("RESET_DB") == "1" or not has_tables():
@@ -55,4 +90,5 @@ if __name__ == "__main__":
         init_db.initialise()
     else:
         print(f"database '{config.DB_NAME}' found, keeping its data (RESET_DB=1 to start fresh)")
+        fix_hospital_locations()
     runpy.run_path(os.path.join(ROOT, "app.py"), run_name="__main__")
